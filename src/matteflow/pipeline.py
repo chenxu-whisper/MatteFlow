@@ -1,0 +1,225 @@
+"""MatteFlow 主 Pipeline"""
+
+import time
+from pathlib import Path
+from typing import Union, Optional
+import numpy as np
+
+from .config import MattingConfig, QualityMode, BackgroundMode
+from .input.decoder import VideoDecoder, SequenceDecoder
+from .analysis.background_analyzer import BackgroundAnalyzer
+from .matte.matte_fusion import MatteFusion
+from .refine.edge_refiner import EdgeRefiner
+from .refine.color_decontaminate import ColorDecontaminate
+from .refine.despeckle import Despeckle
+from .temporal.temporal_stabilizer import TemporalStabilizer
+from .output.encoder import RGBAEncoder
+
+
+class MattingPipeline:
+    """高质量抠图 Pipeline"""
+    
+    def __init__(self, config: Optional[MattingConfig] = None):
+        self.config = config or MattingConfig()
+        self.analyzer = BackgroundAnalyzer()
+        self.fusion = MatteFusion()
+        self.refiner = EdgeRefiner(self.config)
+        self.decontaminate = ColorDecontaminate(self.config)
+        self.despeckle = Despeckle(self.config)
+        self.stabilizer = TemporalStabilizer(self.config)
+        self.encoder = RGBAEncoder()
+        
+        # 初始化混合抠图引擎
+        from .matte.hybrid_matte import HybridMatte
+        self.hybrid_matte = HybridMatte(self.config)
+        
+        self._frames = []
+        self._alphas = []
+        self._processed = []
+    
+    def process(
+        self,
+        input_path: Union[str, Path],
+        output_dir: Union[str, Path],
+        progress_callback=None
+    ) -> dict:
+        """
+        处理视频或序列帧
+        
+        Args:
+            input_path: 输入文件或目录路径
+            output_dir: 输出目录
+            progress_callback: 进度回调函数 (current, total, stage)
+        
+        Returns:
+            dict: 处理结果信息
+        """
+        input_path = Path(input_path)
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        start_time = time.time()
+        
+        # 1. 输入解码
+        self._notify(progress_callback, 0, 100, "decoding")
+        frames, meta = self._decode_input(input_path)
+        total_frames = len(frames)
+        
+        if total_frames == 0:
+            raise ValueError(f"No frames found in {input_path}")
+        
+        print(f"[MatteFlow] Loaded {total_frames} frames, resolution={meta['width']}x{meta['height']}")
+        
+        # 2. 背景模式识别
+        self._notify(progress_callback, 5, 100, "analyzing")
+        if self.config.background_mode == BackgroundMode.AUTO:
+            bg_mode = self.analyzer.analyze(frames)
+            self.config.background_mode = bg_mode
+            print(f"[MatteFlow] Auto-detected background: {bg_mode.value}")
+        else:
+            bg_mode = self.config.background_mode
+        
+        # 3. 生成 Matte
+        self._notify(progress_callback, 10, 100, "matting")
+        alphas = self._generate_matte(frames, bg_mode, progress_callback)
+        
+        # 4. 边缘细化
+        if self.config.quality_mode in (QualityMode.STANDARD, QualityMode.HIGH):
+            self._notify(progress_callback, 50, 100, "refining")
+            alphas = self.refiner.refine(frames, alphas)
+        
+        # 5. 去噪点（EZ-CorridorKey 风格）
+        if self.config.quality_mode in (QualityMode.STANDARD, QualityMode.HIGH):
+            self._notify(progress_callback, 55, 100, "despeckling")
+            alphas = self.despeckle.process(alphas)
+        
+        # 6. 时序稳定（移到颜色去污染之前，避免绿色泄漏）
+        if self.config.quality_mode in (QualityMode.STANDARD, QualityMode.HIGH) and total_frames > 1:
+            self._notify(progress_callback, 60, 100, "stabilizing")
+            alphas = self.stabilizer.stabilize(alphas)
+        
+        # 7. 颜色去污染（在时序稳定之后，基于稳定的 alpha）
+        self._notify(progress_callback, 75, 100, "decontaminating")
+        frames = self.decontaminate.process(frames, alphas, bg_mode)
+        
+        # 7. RGBA 合成与输出
+        self._notify(progress_callback, 85, 100, "encoding")
+        self._encode_output(frames, alphas, output_dir, meta)
+        
+        elapsed = time.time() - start_time
+        fps = total_frames / elapsed if elapsed > 0 else 0
+        
+        result = {
+            "status": "success",
+            "frames_processed": total_frames,
+            "output_dir": str(output_dir),
+            "background_mode": bg_mode.value if hasattr(bg_mode, 'value') else str(bg_mode),
+            "quality_mode": self.config.quality_mode.value if hasattr(self.config.quality_mode, 'value') else str(self.config.quality_mode),
+            "elapsed_time": elapsed,
+            "fps": fps,
+        }
+        
+        print(f"[MatteFlow] Done! {total_frames} frames in {elapsed:.1f}s ({fps:.2f} fps)")
+        return result
+    
+    def _decode_input(self, input_path: Path):
+        """解码输入"""
+        if input_path.is_file():
+            # 视频文件
+            decoder = VideoDecoder()
+            return decoder.decode(input_path)
+        elif input_path.is_dir():
+            # 序列帧目录
+            decoder = SequenceDecoder()
+            return decoder.decode(input_path)
+        else:
+            raise FileNotFoundError(f"Input not found: {input_path}")
+    
+    def _generate_matte(self, frames, bg_mode, progress_callback):
+        """生成 matte"""
+        total = len(frames)
+        
+        def on_progress(i, total):
+            if progress_callback:
+                progress = 10 + int((i / total) * 40)
+                self._notify(progress_callback, progress, 100, "matting")
+        
+        # 使用混合抠图引擎
+        alphas = self.hybrid_matte.generate_sequence(frames, bg_mode, on_progress)
+        
+        return alphas
+    
+    def _encode_output(self, frames, alphas, output_dir, meta):
+        """编码输出"""
+        output_dir = Path(output_dir)
+        
+        # RGBA 合成（统一为 float32 [0,1]）
+        rgba_frames = []
+        for frame, alpha in zip(frames, alphas):
+            # frame 可能是 uint8 [0,255] 或 float [0,1]
+            if frame.dtype == np.uint8:
+                frame_f = frame.astype(np.float32) / 255.0
+            else:
+                frame_f = frame.astype(np.float32)
+            
+            rgba = np.dstack([frame_f, alpha])
+            rgba_frames.append(rgba)
+        
+        # EZ-CorridorKey 风格输出
+        # 1. FG (Straight foreground) - 直接前景，未预乘
+        if self.config.output_fg:
+            fg_dir = output_dir / "FG"
+            fg_dir.mkdir(exist_ok=True)
+            for i, rgba in enumerate(rgba_frames):
+                fg = rgba[:, :, :3]  # RGB only
+                out_path = fg_dir / f"fg_{i:06d}.png"
+                self.encoder.encode_image(fg, out_path)
+                print(f"[Pipeline] Saved FG: {out_path}")
+        
+        # 2. Matte (Linear alpha) - 线性 alpha 遮罩
+        if self.config.output_matte:
+            matte_dir = output_dir / "Matte"
+            matte_dir.mkdir(exist_ok=True)
+            for i, alpha in enumerate(alphas):
+                matte = (alpha * 255).astype(np.uint8)
+                out_path = matte_dir / f"matte_{i:06d}.png"
+                self.encoder.encode_grayscale(matte, out_path)
+                print(f"[Pipeline] Saved Matte: {out_path}")
+        
+        # 3. Comp (Premultiplied) - 预乘合成
+        if self.config.output_comp:
+            comp_dir = output_dir / "Comp"
+            comp_dir.mkdir(exist_ok=True)
+            for i, rgba in enumerate(rgba_frames):
+                alpha = rgba[:, :, 3:4]
+                rgb = rgba[:, :, :3]
+                comp = rgb * alpha  # 预乘
+                out_path = comp_dir / f"comp_{i:06d}.png"
+                self.encoder.encode_image(comp, out_path)
+                print(f"[Pipeline] Saved Comp: {out_path}")
+        
+        # 4. Processed (RGBA) - 处理后完整 RGBA
+        if self.config.output_processed:
+            processed_dir = output_dir / "Processed"
+            processed_dir.mkdir(exist_ok=True)
+            for i, rgba in enumerate(rgba_frames):
+                out_path = processed_dir / f"processed_{i:06d}.png"
+                self.encoder.encode_image(rgba, out_path)
+                print(f"[Pipeline] Saved Processed: {out_path}")
+        
+        # 输出遮罩（可选）
+        if self.config.output_mask:
+            mask_dir = output_dir / "mask"
+            mask_dir.mkdir(exist_ok=True)
+            for i, alpha in enumerate(alphas):
+                mask = (alpha * 255).astype(np.uint8)
+                out_path = mask_dir / f"mask_{i:06d}.png"
+                self.encoder.encode_grayscale(mask, out_path)
+    
+    def _notify(self, callback, current, total, stage):
+        """通知进度"""
+        if callback:
+            try:
+                callback(current, total, stage)
+            except Exception:
+                pass
