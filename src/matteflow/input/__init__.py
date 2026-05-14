@@ -1,3 +1,12 @@
-from .decoder import VideoDecoder, SequenceDecoder
+from .decoder import ImageDecoder, SequenceDecoder, VideoDecoder
+from .formats import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, InputKind, detect_input_kind
 
-__all__ = ["VideoDecoder", "SequenceDecoder"]
+__all__ = [
+    "ImageDecoder",
+    "SequenceDecoder",
+    "VideoDecoder",
+    "IMAGE_EXTENSIONS",
+    "VIDEO_EXTENSIONS",
+    "InputKind",
+    "detect_input_kind",
+]

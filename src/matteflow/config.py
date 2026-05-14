@@ -102,6 +102,7 @@ class MattingConfig:
     despeckle_size: int = 400             # 噪点最小面积（像素数），对齐 EZ-CorridorKey
     despeckle_dilation: int = 25          # 去噪膨胀半径
     despeckle_blur: int = 5               # 去噪模糊半径
+    auto_despeckle_threshold: float = 0.0 # 仅清除低于阈值的 alpha 噪点，不影响 clip_black
     
     # 边缘细化 (Refiner)
     refiner_enable: bool = True           # 启用边缘细化
@@ -176,8 +177,8 @@ class MattingConfig:
     @property
     def despeckle_threshold(self) -> float:
         """兼容旧字段名，按旧 GUI 的 0~1 阈值语义暴露。"""
-        return self.clip_black
+        return self.auto_despeckle_threshold
 
     @despeckle_threshold.setter
     def despeckle_threshold(self, value: float) -> None:
-        self.clip_black = value
+        self.auto_despeckle_threshold = value

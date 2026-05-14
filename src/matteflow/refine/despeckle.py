@@ -43,6 +43,7 @@ class Despeckle:
         
         # 阈值处理去除微小噪点
         threshold = int(self.config.despeckle_threshold * 255)
-        _, cleaned = cv2.threshold(cleaned, threshold, 255, cv2.THRESH_BINARY)
+        if threshold > 0:
+            cleaned = np.where(cleaned <= threshold, 0, cleaned).astype(np.uint8)
         
         return cleaned.astype(np.float32) / 255.0

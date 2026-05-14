@@ -22,6 +22,7 @@ import gradio as gr
 from PIL import Image
 
 from matteflow import MattingPipeline, MattingConfig, QualityMode, BackgroundMode
+from matteflow.input.formats import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from matteflow.utils.cv_compat import video_writer_fourcc
 from matteflow.utils.model_checker import ModelChecker
 from matteflow.utils.output_paths import (
@@ -30,6 +31,65 @@ from matteflow.utils.output_paths import (
 )
 
 logger = logging.getLogger(__name__)
+SUPPORTED_UPLOAD_EXTENSIONS = sorted(VIDEO_EXTENSIONS | IMAGE_EXTENSIONS)
+GUI_DEFAULTS = {
+    "mode": "green",
+    "quality": "standard",
+    "preferred_ai": "gvm",
+    "pure_color": True,
+    "use_filter": False,
+    "green_similarity": 0.4,
+    "green_despill": 0.7,
+    "green_hair": 0.8,
+    "white_protect_brightness": 180,
+    "white_protect_saturation": 25,
+    "edge_despill_factor": 1.2,
+    "screen_color": "auto",
+    "key_strength": 1.0,
+    "clip_black": 0.0,
+    "clip_white": 1.0,
+    "shrink_grow": 0,
+    "edge_blur": 0,
+    "despill_enable": True,
+    "despill_strength": 0.7,
+    "despill_color": "green",
+    "despeckle_enable": True,
+    "despeckle_radius": 2,
+    "despeckle_threshold": 0.0,
+    "output_fg": False,
+    "output_matte": True,
+    "output_comp": False,
+    "output_processed": True,
+}
+RECOMMENDED_PRESET_OUTPUT_KEYS = [
+    "mode",
+    "quality",
+    "use_ai",
+    "pure_color_mode",
+    "use_guided_filter",
+    "green_similarity",
+    "green_despill",
+    "green_hair",
+    "white_protect_thresh",
+    "white_protect_sat",
+    "edge_despill_factor",
+    "screen_color",
+    "key_strength",
+    "clip_black",
+    "clip_white",
+    "shrink_grow",
+    "edge_blur",
+    "despill_enable",
+    "despill_strength",
+    "despill_color",
+    "despeckle_enable",
+    "despeckle_radius",
+    "despeckle_threshold",
+    "output_fg",
+    "output_matte",
+    "output_comp",
+    "output_processed",
+]
 
 # 全局状态
 _output_dir = None
@@ -59,6 +119,50 @@ def _resolve_gui_output_dir(video_path, output_root: Path | None = None) -> Path
         project_root=project_root,
         output_root=output_root,
     )
+
+
+def _default_ai_choice() -> str:
+    preferred = GUI_DEFAULTS["preferred_ai"]
+    if any(value == preferred for _, value in _ui_choices):
+        return preferred
+    return _ui_choices[0][1] if _ui_choices else "traditional"
+
+
+def _apply_recommended_preset() -> dict:
+    return {
+        "mode": GUI_DEFAULTS["mode"],
+        "quality": GUI_DEFAULTS["quality"],
+        "use_ai": _default_ai_choice(),
+        "pure_color_mode": GUI_DEFAULTS["pure_color"],
+        "use_guided_filter": GUI_DEFAULTS["use_filter"],
+        "green_similarity": GUI_DEFAULTS["green_similarity"],
+        "green_despill": GUI_DEFAULTS["green_despill"],
+        "green_hair": GUI_DEFAULTS["green_hair"],
+        "white_protect_thresh": GUI_DEFAULTS["white_protect_brightness"],
+        "white_protect_sat": GUI_DEFAULTS["white_protect_saturation"],
+        "edge_despill_factor": GUI_DEFAULTS["edge_despill_factor"],
+        "screen_color": GUI_DEFAULTS["screen_color"],
+        "key_strength": GUI_DEFAULTS["key_strength"],
+        "clip_black": GUI_DEFAULTS["clip_black"],
+        "clip_white": GUI_DEFAULTS["clip_white"],
+        "shrink_grow": GUI_DEFAULTS["shrink_grow"],
+        "edge_blur": GUI_DEFAULTS["edge_blur"],
+        "despill_enable": GUI_DEFAULTS["despill_enable"],
+        "despill_strength": GUI_DEFAULTS["despill_strength"],
+        "despill_color": GUI_DEFAULTS["despill_color"],
+        "despeckle_enable": GUI_DEFAULTS["despeckle_enable"],
+        "despeckle_radius": GUI_DEFAULTS["despeckle_radius"],
+        "despeckle_threshold": GUI_DEFAULTS["despeckle_threshold"],
+        "output_fg": GUI_DEFAULTS["output_fg"],
+        "output_matte": GUI_DEFAULTS["output_matte"],
+        "output_comp": GUI_DEFAULTS["output_comp"],
+        "output_processed": GUI_DEFAULTS["output_processed"],
+    }
+
+
+def _recommended_preset_updates():
+    preset = _apply_recommended_preset()
+    return tuple(gr.update(value=preset[key]) for key in RECOMMENDED_PRESET_OUTPUT_KEYS)
 
 
 def process_video(
@@ -544,7 +648,7 @@ custom_css = """
 def create_ui():
     """创建 Gradio UI"""
 
-    with gr.Blocks(title="MatteFlow - 专业视频抠图") as app:
+    with gr.Blocks(title="MatteFlow - 专业视频/序列帧/图片抠图") as app:
 
         # 顶部标题栏
         with gr.Row():
@@ -562,10 +666,11 @@ def create_ui():
                 # 文件导入区
                 with gr.Group():
                     gr.Markdown("### 📁 导入")
-                    video_input = gr.Video(
-                        label="拖放视频文件",
-                        format="mp4",
-                        height=200
+                    video_input = gr.File(
+                        label="拖放视频或图片文件",
+                        file_types=SUPPORTED_UPLOAD_EXTENSIONS,
+                        type="filepath",
+                        height=120,
                     )
 
                 # 引擎选择
@@ -574,14 +679,14 @@ def create_ui():
 
                     mode_select = gr.Radio(
                         choices=[("🟢 绿幕", "green"), ("⚫ 黑底", "black"), ("🔍 自动识别", "auto")],
-                        value="auto",
+                        value=GUI_DEFAULTS["mode"],
                         label="背景模式"
                     )
 
                     # 动态生成模型选项
                     ai_select = gr.Radio(
                         choices=_ui_choices if _ui_choices else [("📐 传统算法", "traditional")],
-                        value=_ui_choices[0][1] if _ui_choices else "traditional",
+                        value=_default_ai_choice(),
                         label="Alpha 生成器 (✅=可用, ❌=未安装)"
                     )
 
@@ -597,7 +702,7 @@ def create_ui():
 
                     quality_select = gr.Radio(
                         choices=[("⚡ 快速", "fast"), ("✨ 标准", "standard"), ("🎨 高质量", "high")],
-                        value="standard",
+                        value=GUI_DEFAULTS["quality"],
                         label="质量模式"
                     )
 
@@ -609,50 +714,50 @@ def create_ui():
                     with gr.Accordion("屏幕颜色", open=True):
                         screen_color = gr.Radio(
                             choices=[("🟢 绿色", "green"), ("🔵 蓝色", "blue"), ("🔍 自动检测", "auto")],
-                            value="auto",
+                            value=GUI_DEFAULTS["screen_color"],
                             label="屏幕颜色"
                         )
 
                     with gr.Accordion("Key 强度", open=True):
                         key_strength = gr.Slider(
-                            0.1, 10.0, value=1.0, step=0.1,
+                            0.1, 10.0, value=GUI_DEFAULTS["key_strength"], step=0.1,
                             label="Key Strength",
                             info="抠像强度,越高越激进"
                         )
 
                     with gr.Accordion("Alpha 裁剪", open=True):
                         clip_black = gr.Slider(
-                            0.0, 1.0, value=0.0, step=0.01,
+                            0.0, 1.0, value=GUI_DEFAULTS["clip_black"], step=0.01,
                             label="Clip Black",
                             info="低于此值的 Alpha 置为 0"
                         )
                         clip_white = gr.Slider(
-                            0.0, 1.0, value=1.0, step=0.01,
+                            0.0, 1.0, value=GUI_DEFAULTS["clip_white"], step=0.01,
                             label="Clip White",
                             info="高于此值的 Alpha 置为 1"
                         )
 
                     with gr.Accordion("边缘调整", open=False):
                         shrink_grow = gr.Slider(
-                            -250, 250, value=0, step=1,
+                            -250, 250, value=GUI_DEFAULTS["shrink_grow"], step=1,
                             label="Shrink/Grow",
                             info="负值=收缩(腐蚀),正值=扩张(膨胀)"
                         )
                         edge_blur = gr.Slider(
-                            0, 50, value=0, step=1,
+                            0, 50, value=GUI_DEFAULTS["edge_blur"], step=1,
                             label="Edge Blur",
                             info="边缘模糊半径(px)"
                         )
 
                     with gr.Accordion("传统参数(兼容)", open=False):
-                        green_sim = gr.Slider(0.1, 1.0, value=0.4, step=0.05, label="颜色相似度")
-                        green_despill = gr.Slider(0.0, 1.0, value=0.7, step=0.05, label="去绿边强度")
-                        green_hair = gr.Slider(0.0, 1.0, value=0.8, step=0.05, label="毛发保护")
-                        white_protect_thresh = gr.Slider(150, 255, value=180, step=5, label="白色保护亮度")
-                        white_protect_sat = gr.Slider(10, 60, value=25, step=1, label="白色保护饱和度")
-                        edge_despill_factor = gr.Slider(0.5, 2.0, value=1.2, step=0.1, label="去绿系数")
-                        pure_color = gr.Checkbox(value=True, label="纯色模式(更激进去背景)")
-                        use_filter = gr.Checkbox(value=False, label="边缘柔化")
+                        green_sim = gr.Slider(0.1, 1.0, value=GUI_DEFAULTS["green_similarity"], step=0.05, label="颜色相似度")
+                        green_despill = gr.Slider(0.0, 1.0, value=GUI_DEFAULTS["green_despill"], step=0.05, label="去绿边强度")
+                        green_hair = gr.Slider(0.0, 1.0, value=GUI_DEFAULTS["green_hair"], step=0.05, label="毛发保护")
+                        white_protect_thresh = gr.Slider(150, 255, value=GUI_DEFAULTS["white_protect_brightness"], step=5, label="白色保护亮度")
+                        white_protect_sat = gr.Slider(10, 60, value=GUI_DEFAULTS["white_protect_saturation"], step=1, label="白色保护饱和度")
+                        edge_despill_factor = gr.Slider(0.5, 2.0, value=GUI_DEFAULTS["edge_despill_factor"], step=0.1, label="去绿系数")
+                        pure_color = gr.Checkbox(value=GUI_DEFAULTS["pure_color"], label="纯色模式(更激进去背景)")
+                        use_filter = gr.Checkbox(value=GUI_DEFAULTS["use_filter"], label="边缘柔化")
 
                 # 黑底参数
                 with gr.Group(visible=False) as black_params:
@@ -678,18 +783,18 @@ def create_ui():
                         edge_threshold = gr.Slider(0.0, 1.0, value=0.5, step=0.05, label="边缘阈值")
 
                     with gr.Accordion("去溢色", open=True):
-                        despill_enable = gr.Checkbox(value=True, label="启用去溢色")
-                        despill_strength = gr.Slider(0.0, 1.0, value=0.7, step=0.05, label="去溢色强度")
+                        despill_enable = gr.Checkbox(value=GUI_DEFAULTS["despill_enable"], label="启用去溢色")
+                        despill_strength = gr.Slider(0.0, 1.0, value=GUI_DEFAULTS["despill_strength"], step=0.05, label="去溢色强度")
                         despill_color = gr.Radio(
                             choices=[("绿色", "green"), ("蓝色", "blue"), ("自动", "auto")],
-                            value="green",
+                            value=GUI_DEFAULTS["despill_color"],
                             label="溢色颜色"
                         )
 
                     with gr.Accordion("去噪点", open=False):
-                        despeckle_enable = gr.Checkbox(value=True, label="启用去噪点")
-                        despeckle_radius = gr.Slider(1, 5, value=2, step=1, label="去噪点半径")
-                        despeckle_threshold = gr.Slider(0.0, 1.0, value=0.1, step=0.05, label="去噪点阈值")
+                        despeckle_enable = gr.Checkbox(value=GUI_DEFAULTS["despeckle_enable"], label="启用去噪点")
+                        despeckle_radius = gr.Slider(1, 5, value=GUI_DEFAULTS["despeckle_radius"], step=1, label="去噪点半径")
+                        despeckle_threshold = gr.Slider(0.0, 1.0, value=GUI_DEFAULTS["despeckle_threshold"], step=0.05, label="去噪点阈值")
 
                     with gr.Accordion("时序稳定", open=False):
                         temporal_enable = gr.Checkbox(value=True, label="启用时序稳定")
@@ -710,11 +815,11 @@ def create_ui():
                             label="输出格式"
                         )
                         with gr.Row():
-                            output_fg = gr.Checkbox(value=True, label="FG (直接前景)")
-                            output_matte = gr.Checkbox(value=True, label="Matte (Alpha)")
+                            output_fg = gr.Checkbox(value=GUI_DEFAULTS["output_fg"], label="FG (直接前景)")
+                            output_matte = gr.Checkbox(value=GUI_DEFAULTS["output_matte"], label="Matte (Alpha)")
                         with gr.Row():
-                            output_comp = gr.Checkbox(value=False, label="Comp (预乘)")
-                            output_processed = gr.Checkbox(value=True, label="Processed (RGBA)")
+                            output_comp = gr.Checkbox(value=GUI_DEFAULTS["output_comp"], label="Comp (预乘)")
+                            output_processed = gr.Checkbox(value=GUI_DEFAULTS["output_processed"], label="Processed (RGBA)")
                         output_premultiply = gr.Checkbox(value=False, label="预乘 Alpha")
                         output_invert = gr.Checkbox(value=False, label="反转 Alpha")
 
@@ -727,7 +832,9 @@ def create_ui():
                     ai_sharpen = gr.Slider(0.0, 1.0, value=0.0, step=0.05, label="锐化")
 
                 # 处理按钮
-                process_btn = gr.Button("🚀 开始处理", variant="primary", size="lg")
+                with gr.Row():
+                    preset_btn = gr.Button("✨ 应用推荐参数", variant="secondary")
+                    process_btn = gr.Button("🚀 开始处理", variant="primary", size="lg")
 
                 # 状态栏
                 status_text = gr.Textbox(
@@ -811,6 +918,46 @@ def create_ui():
             outputs=[ai_params]
         )
 
+        preset_outputs = [
+            mode_select,
+            quality_select,
+            ai_select,
+            pure_color,
+            use_filter,
+            green_sim,
+            green_despill,
+            green_hair,
+            white_protect_thresh,
+            white_protect_sat,
+            edge_despill_factor,
+            screen_color,
+            key_strength,
+            clip_black,
+            clip_white,
+            shrink_grow,
+            edge_blur,
+            despill_enable,
+            despill_strength,
+            despill_color,
+            despeckle_enable,
+            despeckle_radius,
+            despeckle_threshold,
+            output_fg,
+            output_matte,
+            output_comp,
+            output_processed,
+        ]
+
+        app.load(
+            fn=_recommended_preset_updates,
+            outputs=preset_outputs,
+        )
+
+        preset_btn.click(
+            fn=_recommended_preset_updates,
+            outputs=preset_outputs,
+        )
+
         # 绑定处理事件
         process_btn.click(
             fn=process_video,
@@ -881,7 +1028,7 @@ def create_ui():
         ### 📖 快速指南
 
         **推荐流程:**
-        1. 上传视频(支持 MP4/MOV/AVI)
+        1. 上传视频或图片(视频: MP4/MOV/AVI/MKV/WEBM; 图片: PNG/JPG/JPEG/WEBP/BMP/TIF/TIFF/EXR)
         2. 选择背景模式(绿幕/黑底/自动)
         3. 选择算法(CorridorKey 推荐用于绿幕)
         4. 调整参数(通常默认即可)

@@ -4,7 +4,8 @@ MatteFlow CLI - 命令行抠图工具
 
 用法:
     python scripts/run_matting.py --input assets/video/test_green_1.mp4
-    python scripts/run_matting.py --input assets/video/test_black_1.mp4 --output output/black --mode black
+    python scripts/run_matting.py --input assets/image/rabbit.png
+    python scripts/run_matting.py --input assets/frames/rabbit_seq --output output/frames --mode green
 """
 
 import sys
@@ -17,6 +18,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
 from matteflow import MattingPipeline, MattingConfig, QualityMode, BackgroundMode
+from matteflow.input.formats import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from matteflow.utils.output_paths import resolve_project_output_dir
 
 logger = logging.getLogger(__name__)
@@ -41,8 +43,15 @@ def _configure_logging(debug: bool = False) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="MatteFlow - High-quality video matting")
-    parser.add_argument("--input", "-i", required=True, help="输入视频或序列帧目录")
+    supported_video = ", ".join(sorted(VIDEO_EXTENSIONS))
+    supported_image = ", ".join(sorted(IMAGE_EXTENSIONS))
+    parser = argparse.ArgumentParser(description="MatteFlow - High-quality video, sequence, and image matting")
+    parser.add_argument(
+        "--input",
+        "-i",
+        required=True,
+        help=f"输入视频、单张图片或序列帧目录。视频: {supported_video}; 图片: {supported_image}",
+    )
     parser.add_argument("--output", "-o", help="输出目录，默认使用 temp/output/<输入文件名>/")
     parser.add_argument("--mode", choices=["auto", "green", "black"], default="auto",
                        help="背景模式 (default: auto)")

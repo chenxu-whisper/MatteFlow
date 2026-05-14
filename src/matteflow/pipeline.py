@@ -7,7 +7,8 @@ from typing import Union, Optional
 import numpy as np
 
 from .config import MattingConfig, QualityMode, BackgroundMode
-from .input.decoder import VideoDecoder, SequenceDecoder
+from .input.decoder import ImageDecoder, SequenceDecoder, VideoDecoder
+from .input.formats import InputKind, detect_input_kind
 from .analysis.background_analyzer import BackgroundAnalyzer
 from .matte.matte_fusion import MatteFusion
 from .refine.edge_refiner import EdgeRefiner
@@ -47,7 +48,7 @@ class MattingPipeline:
         progress_callback=None
     ) -> dict:
         """
-        处理视频或序列帧
+        处理视频、序列帧或单张图片
         
         Args:
             input_path: 输入文件或目录路径
@@ -194,16 +195,17 @@ class MattingPipeline:
     
     def _decode_input(self, input_path: Path):
         """解码输入"""
-        if input_path.is_file():
-            # 视频文件
+        input_kind = detect_input_kind(input_path)
+        if input_kind == InputKind.VIDEO:
             decoder = VideoDecoder()
             return decoder.decode(input_path)
-        elif input_path.is_dir():
-            # 序列帧目录
+        if input_kind == InputKind.IMAGE:
+            decoder = ImageDecoder()
+            return decoder.decode(input_path)
+        if input_kind == InputKind.SEQUENCE:
             decoder = SequenceDecoder()
             return decoder.decode(input_path)
-        else:
-            raise FileNotFoundError(f"Input not found: {input_path}")
+        raise FileNotFoundError(f"Input not found: {input_path}")
     
     def _generate_matte(self, frames, bg_mode, progress_callback):
         """生成 matte"""
