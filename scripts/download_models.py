@@ -1,19 +1,35 @@
-#!/usr/bin/env python3
-"""下载 MatteFlow 所需的 AI 模型
-
-用法:
-    python scripts/download_models.py --all
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+使用方法：
     python scripts/download_models.py --model gvm
     python scripts/download_models.py --model matanyone2
     python scripts/download_models.py --model sam2
+    python scripts/download_models.py --model birefnet
+    python scripts/download_models.py --model corridorkey
+    python scripts/download_models.py --model gvm
+    python scripts/download_models.py --all
 """
 
 import argparse
 import sys
+import warnings
 from pathlib import Path
 
+# 禁用 HuggingFace Hub 警告
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message=".*local_dir_use_symlinks.*")
+warnings.filterwarnings("ignore", message=".*symlinks.*")
+
+# 设置环境变量禁用符号链接警告
+import os
+
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+
 project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root / "src"))
+
+from matteflow.utils.model_paths import model_file, models_root
 
 
 def download_gvm():
@@ -22,28 +38,23 @@ def download_gvm():
     print("[DOWNLOAD] GVM (Generative Video Matting)")
     print("=" * 60)
     print("模型大小: ~6 GB")
-    print("来源: https://huggingface.co/geyongtao/gvm")
-    print()
-    
+
     try:
         from huggingface_hub import snapshot_download
-        
-        cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+
+        cache_dir = models_root()
         cache_dir.mkdir(parents=True, exist_ok=True)
-        
+
         print("开始下载...")
         snapshot_download(
             repo_id="geyongtao/gvm",
-            cache_dir=cache_dir,
-            local_dir_use_symlinks=False
+            cache_dir=cache_dir
         )
-        
+
         print("[OK] GVM 下载完成！")
         return True
-        
     except Exception as e:
-        print(f"[ERROR] 下载失败: {e}")
-        print("请手动下载: https://huggingface.co/geyongtao/gvm")
+        print(f"[ERROR] GVM 下载失败: {e}")
         return False
 
 
@@ -53,29 +64,22 @@ def download_matanyone2():
     print("[DOWNLOAD] MatAnyone2")
     print("=" * 60)
     print("模型大小: ~135 MB")
-    print("来源: https://huggingface.co/pq-yang/MatAnyone2")
-    print()
-    
+
     try:
-        from huggingface_hub import hf_hub_download
-        
-        cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+        import urllib.request
+
+        cache_dir = models_root()
         cache_dir.mkdir(parents=True, exist_ok=True)
-        
+        model_path = model_file("matanyone2.pth")
+        url = "https://github.com/pq-yang/MatAnyone2/releases/download/v1.0.0/matanyone2.pth"
+
         print("开始下载...")
-        hf_hub_download(
-            repo_id="pq-yang/MatAnyone2",
-            filename="matanyone2.pth",
-            cache_dir=cache_dir,
-            local_dir_use_symlinks=False
-        )
-        
+        urllib.request.urlretrieve(url, model_path)
+
         print("[OK] MatAnyone2 下载完成！")
         return True
-        
     except Exception as e:
-        print(f"[ERROR] 下载失败: {e}")
-        print("请手动下载: https://huggingface.co/pq-yang/MatAnyone2")
+        print(f"[ERROR] MatAnyone2 下载失败: {e}")
         return False
 
 
@@ -85,28 +89,23 @@ def download_sam2():
     print("[DOWNLOAD] SAM2 (Segment Anything 2)")
     print("=" * 60)
     print("模型大小: ~324 MB")
-    print("来源: https://huggingface.co/facebook/sam2-hiera-base-plus")
-    print()
-    
+
     try:
         from huggingface_hub import snapshot_download
-        
-        cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+
+        cache_dir = models_root()
         cache_dir.mkdir(parents=True, exist_ok=True)
-        
+
         print("开始下载...")
         snapshot_download(
             repo_id="facebook/sam2-hiera-base-plus",
-            cache_dir=cache_dir,
-            local_dir_use_symlinks=False
+            cache_dir=cache_dir
         )
-        
+
         print("[OK] SAM2 下载完成！")
         return True
-        
     except Exception as e:
-        print(f"[ERROR] 下载失败: {e}")
-        print("请手动下载: https://huggingface.co/facebook/sam2-hiera-base-plus")
+        print(f"[ERROR] SAM2 下载失败: {e}")
         return False
 
 
@@ -116,28 +115,23 @@ def download_birefnet():
     print("[DOWNLOAD] BiRefNet")
     print("=" * 60)
     print("模型大小: ~940 MB")
-    print("来源: https://huggingface.co/ZhengPeng7/BiRefNet")
-    print()
-    
+
     try:
         from huggingface_hub import snapshot_download
-        
-        cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+
+        cache_dir = models_root()
         cache_dir.mkdir(parents=True, exist_ok=True)
-        
+
         print("开始下载...")
         snapshot_download(
             repo_id="ZhengPeng7/BiRefNet",
-            cache_dir=cache_dir,
-            local_dir_use_symlinks=False
+            cache_dir=cache_dir
         )
-        
+
         print("[OK] BiRefNet 下载完成！")
         return True
-        
     except Exception as e:
-        print(f"[ERROR] 下载失败: {e}")
-        print("请手动下载: https://huggingface.co/ZhengPeng7/BiRefNet")
+        print(f"[ERROR] BiRefNet 下载失败: {e}")
         return False
 
 
@@ -147,99 +141,84 @@ def download_corridorkey():
     print("[DOWNLOAD] CorridorKey")
     print("=" * 60)
     print("模型大小: ~383 MB")
-    print("来源: https://github.com/nikopueringer/CorridorKey")
-    print()
-    
+
     try:
         import urllib.request
-        
-        model_dir = Path.home() / ".cache" / "matteflow" / "models"
+
+        model_dir = models_root()
         model_dir.mkdir(parents=True, exist_ok=True)
-        
-        model_path = model_dir / "corridorkey_model.pth"
-        
-        # GitHub 发布链接
-        url = "https://github.com/nikopueringer/CorridorKey/releases/download/v1.0.0/corridorkey_model.pth"
-        
-        print(f"开始下载...")
-        print(f"URL: {url}")
-        
+
+        model_path = model_file("corridorkey.pth")
+        url = "https://huggingface.co/nikopueringer/CorridorKey_v1.0/resolve/main/CorridorKey_v1.0.pth"
+
+        print("开始下载...")
         urllib.request.urlretrieve(url, model_path)
-        
         print(f"[OK] CorridorKey 下载完成！")
-        print(f"保存位置: {model_path}")
         return True
-        
     except Exception as e:
-        print(f"[ERROR] 下载失败: {e}")
-        print("请手动下载:")
-        print("  1. 访问 https://github.com/nikopueringer/CorridorKey")
-        print("  2. 下载模型文件")
-        print(f"  3. 放置到: {Path.home() / '.cache' / 'matteflow' / 'models'}")
+        print(f"[ERROR] CorridorKey 下载失败: {e}")
+        return False
+
+
+def download_rvm():
+    """下载 RVM 模型 (~15MB)"""
+    print("=" * 60)
+    print("[DOWNLOAD] RVM (Robust Video Matting)")
+    print("=" * 60)
+    print("模型大小: ~15 MB")
+
+    try:
+        import urllib.request
+
+        model_dir = models_root()
+        model_dir.mkdir(parents=True, exist_ok=True)
+
+        model_path = model_file("rvm_mobilenetv3.pth")
+        url = "https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3.pth"
+
+        print("开始下载...")
+        urllib.request.urlretrieve(url, model_path)
+        print(f"[OK] RVM 下载完成！")
+        return True
+    except Exception as e:
+        print(f"[ERROR] RVM 下载失败: {e}")
         return False
 
 
 def main():
-    parser = argparse.ArgumentParser(description="下载 MatteFlow AI 模型")
+    parser = argparse.ArgumentParser(description="下载 MatteFlow 所需的模型")
+    parser.add_argument("--model", type=str, default=None,
+                        help="模型名称: gvm, matanyone2, sam2, birefnet, corridorkey, rvm")
     parser.add_argument("--all", action="store_true", help="下载所有模型")
-    parser.add_argument("--model", choices=["gvm", "matanyone2", "sam2", "birefnet", "corridorkey"],
-                       help="下载指定模型")
-    parser.add_argument("--list", action="store_true", help="列出可用模型")
-    
+
     args = parser.parse_args()
-    
-    if args.list:
-        print("=" * 60)
-        print("可用模型列表")
-        print("=" * 60)
-        print()
-        print("1. GVM (Generative Video Matting)")
-        print("   大小: ~6 GB")
-        print("   用途: 生成式视频抠图")
-        print()
-        print("2. MatAnyone2")
-        print("   大小: ~135 MB")
-        print("   用途: 人物视频抠图")
-        print()
-        print("3. SAM2 (Segment Anything 2)")
-        print("   大小: ~324 MB")
-        print("   用途: 视频分割跟踪")
-        print()
-        print("4. BiRefNet")
-        print("   大小: ~940 MB")
-        print("   用途: 通用图像抠图")
-        print()
-        print("5. CorridorKey")
-        print("   大小: ~383 MB")
-        print("   用途: 物理分离抠图")
-        print()
-        print("使用方法:")
+
+    if not args.model and not args.all:
+        print("请指定要下载的模型:")
         print("  python scripts/download_models.py --model gvm")
         print("  python scripts/download_models.py --all")
         return
-    
+
     if args.all:
         print("=" * 60)
-        print("下载所有模型")
+        print("[INFO] 开始下载所有模型")
         print("=" * 60)
-        print()
-        
+
         results = []
         results.append(("GVM", download_gvm()))
         results.append(("MatAnyone2", download_matanyone2()))
         results.append(("SAM2", download_sam2()))
         results.append(("BiRefNet", download_birefnet()))
         results.append(("CorridorKey", download_corridorkey()))
-        
-        print()
-        print("=" * 60)
-        print("下载结果")
+        results.append(("RVM", download_rvm()))
+
+        print("\n" + "=" * 60)
+        print("下载结果汇总:")
         print("=" * 60)
         for name, success in results:
-            status = "OK" if success else "FAIL"
-            print(f"{name}: {status}")
-    
-    elif args.model:
+            status = "✓ 成功" if success else "✗ 失败"
+            print(f"  {name}: {status}")
+    else:
         if args.model == "gvm":
             download_gvm()
         elif args.model == "matanyone2":
@@ -250,8 +229,10 @@ def main():
             download_birefnet()
         elif args.model == "corridorkey":
             download_corridorkey()
-    else:
-        parser.print_help()
+        elif args.model == "rvm":
+            download_rvm()
+        else:
+            print(f"未知模型: {args.model}")
 
 
 if __name__ == "__main__":

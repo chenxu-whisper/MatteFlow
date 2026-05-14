@@ -4,13 +4,23 @@
 通过物理光场分离，保留毛发、运动模糊、半透明
 """
 
+import logging
 import numpy as np
 import cv2
 import torch
-from typing import List, Optional, Tuple
-from pathlib import Path
+import importlib
+from typing import List, Optional
 
 from ..config import MattingConfig
+from ..utils.model_paths import model_file, models_root
+
+logger = logging.getLogger(__name__)
+
+
+def load_corridorkey_engine_class():
+    """Lazy-load the vendored CorridorKey engine to avoid eager heavy imports."""
+    module = importlib.import_module("matteflow.vendor.corridorkey_module.inference_engine")
+    return module.CorridorKeyEngine
 
 
 class CorridorKeyMatte:
@@ -25,60 +35,46 @@ class CorridorKeyMatte:
     def _load_model(self):
         """加载 CorridorKey 模型"""
         try:
-            import sys
-            sys.path.insert(0, "E:/ByteDance/Projects/Code/EZ-CorridorKey")
-            
-            # 使用 EZ-CorridorKey 的 inference_engine
-            from CorridorKeyModule.inference_engine import CorridorKeyEngine
-            
-            # 检查模型路径
-            ez_ck_path = Path("E:/ByteDance/Projects/Code/EZ-CorridorKey/CorridorKeyModule/checkpoints/CorridorKey_v1.0.pth")
-            
-            if not ez_ck_path.exists():
-                print("[CorridorKey] Model not found, downloading...")
+            CorridorKeyEngine = load_corridorkey_engine_class()
+
+            checkpoint_path = model_file("corridorkey.pth")
+
+            if not checkpoint_path.exists():
+                logger.info("CorridorKey model not found, triggering download: %s", checkpoint_path)
                 self._download_model()
-                ez_ck_path = Path(__file__).parent / "corridorkey" / "model.pth"
-            
-            print(f"[CorridorKey] Loading from {ez_ck_path}...")
+
+            logger.info("Loading CorridorKey model from %s on device=%s", checkpoint_path, self.device)
             self.model = CorridorKeyEngine(
-                checkpoint_path=str(ez_ck_path),
+                checkpoint_path=str(checkpoint_path),
                 device=str(self.device),
                 img_size=2048,
                 use_refiner=True,
-                optimization_mode='auto'
+                optimization_mode="auto",
             )
-            print(f"[CorridorKey] Loaded on {self.device}")
+            logger.info("Loaded CorridorKey on %s", self.device)
             
         except Exception as e:
-            print(f"[CorridorKey] Failed to load: {e}")
-            print("[CorridorKey] Fallback to traditional")
+            logger.exception("Failed to load CorridorKey")
+            logger.warning("CorridorKey will fall back to traditional processing")
             self.model = None
     
     def _download_model(self):
         """下载 CorridorKey 模型 (383MB)"""
         import urllib.request
         
-        model_dir = Path(__file__).parent / "corridorkey"
-        model_dir.mkdir(exist_ok=True)
+        model_dir = models_root()
+        model_dir.mkdir(parents=True, exist_ok=True)
         
-        # CorridorKey 模型下载链接
-        # 尝试多个镜像
-        urls = [
-            "https://github.com/nikopueringer/CorridorKey/releases/download/v1.0.0/corridorkey_model.pth",
-            "https://huggingface.co/nikopueringer/CorridorKey/resolve/main/model.pth",
-        ]
-        model_path = model_dir / "model.pth"
+        # 对齐 EZ-CorridorKey 当前使用的官方权重来源与本项目加载路径。
+        url = "https://huggingface.co/nikopueringer/CorridorKey_v1.0/resolve/main/CorridorKey_v1.0.pth"
+        model_path = model_dir / "corridorkey.pth"
         
-        for url in urls:
-            try:
-                print(f"[CorridorKey] Downloading from {url}...")
-                urllib.request.urlretrieve(url, model_path)
-                print(f"[CorridorKey] Model saved to {model_path}")
-                return
-            except Exception as e:
-                print(f"[CorridorKey] Failed to download from {url}: {e}")
-        
-        raise RuntimeError("All download URLs failed")
+        logger.info("Downloading CorridorKey weights from %s", url)
+        try:
+            urllib.request.urlretrieve(url, model_path)
+            logger.info("Saved CorridorKey weights to %s", model_path)
+        except Exception as e:
+            raise RuntimeError(f"CorridorKey download failed: {e}") from e
     
     def generate(self, frame: np.ndarray, background: Optional[np.ndarray] = None) -> np.ndarray:
         """单帧抠图 — 对齐 EZ-CorridorKey 参数
@@ -91,13 +87,15 @@ class CorridorKeyMatte:
             alpha: Alpha 通道 (H, W), float32 [0, 1]
         """
         if self.model is None:
+            logger.info("Model unavailable, falling back to GreenScreenMatte")
             from .green_screen_matte import GreenScreenMatte
             return GreenScreenMatte(self.config).generate(frame)
         
         # 直接使用 EZ-CorridorKey 的 process_frame 方法
         try:
-            # 转换颜色空间
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            logger.info("Running CorridorKey process_frame on resolution=%sx%s", frame.shape[1], frame.shape[0])
+            # 上游 decoder 已统一输出 RGB，这里不再重复做 BGR->RGB 变换
+            frame_rgb = frame
             
             # 创建默认 mask（全白，让模型自己检测）
             h, w = frame.shape[:2]
@@ -112,26 +110,7 @@ class CorridorKeyMatte:
                 screen_color=getattr(self.config, 'screen_color', 'auto')
             )
             
-            # 提取 alpha
-            if isinstance(result, dict):
-                alpha = result.get('alpha', result.get('matte', None))
-            elif isinstance(result, tuple):
-                alpha = result[0]
-            else:
-                alpha = result
-            
-            # 确保是 numpy 数组
-            if isinstance(alpha, torch.Tensor):
-                alpha = alpha.cpu().numpy()
-            
-            # 确保单通道
-            if alpha.ndim == 3:
-                alpha = alpha[..., 0] if alpha.shape[2] > 1 else alpha[..., 0]
-            
-            # 归一化
-            if alpha.max() > 1.0:
-                alpha = alpha / 255.0
-            alpha = np.clip(alpha, 0, 1).astype(np.float32)
+            alpha = self._extract_alpha_array(result)
             
             # 应用后处理参数
             alpha = self._apply_postprocess(alpha)
@@ -139,10 +118,37 @@ class CorridorKeyMatte:
             return alpha
             
         except Exception as e:
-            print(f"[CorridorKey] process_frame failed: {e}")
+            logger.exception("CorridorKey process_frame failed")
             # 回退到传统算法
             from .green_screen_matte import GreenScreenMatte
             return GreenScreenMatte(self.config).generate(frame)
+
+    def _extract_alpha_array(self, result) -> np.ndarray:
+        """Extract alpha output and normalize it to a 2D float32 numpy array."""
+        alpha = None
+        if isinstance(result, dict):
+            alpha = result.get("alpha", result.get("matte"))
+        elif isinstance(result, tuple):
+            alpha = result[0] if result else None
+        else:
+            alpha = result
+
+        if alpha is None:
+            raise RuntimeError("CorridorKey returned no alpha output")
+
+        if isinstance(alpha, torch.Tensor):
+            alpha_array = alpha.detach().cpu().numpy()
+        else:
+            alpha_array = np.asarray(alpha, dtype=np.float32)
+
+        if alpha_array.ndim == 3:
+            alpha_array = alpha_array[..., 0]
+
+        alpha_array = alpha_array.astype(np.float32, copy=False)
+        if alpha_array.max(initial=0.0) > 1.0:
+            alpha_array = alpha_array / 255.0
+
+        return np.clip(alpha_array, 0.0, 1.0).astype(np.float32, copy=False)
     
     def _apply_postprocess(self, alpha: np.ndarray) -> np.ndarray:
         """应用 EZ-CorridorKey 风格后处理"""
@@ -194,6 +200,7 @@ class CorridorKeyMatte:
     
     def generate_sequence(self, frames: List[np.ndarray], background: Optional[np.ndarray] = None, progress_callback=None) -> List[np.ndarray]:
         """序列抠图"""
+        logger.info("Starting CorridorKey sequence inference for %s frames", len(frames))
         alphas = []
         total = len(frames)
         
@@ -204,73 +211,5 @@ class CorridorKeyMatte:
             if progress_callback and i % max(1, total // 20) == 0:
                 progress_callback(i, total)
         
+        logger.info("Completed CorridorKey sequence inference with %s matte frames", len(alphas))
         return alphas
-    
-    def _preprocess(self, frame: np.ndarray) -> Tuple[torch.Tensor, Tuple[int, int]]:
-        """预处理 - CorridorKey 需要 4 通道输入 (RGBA)"""
-        h, w = frame.shape[:2]
-        
-        # 缩放到模型输入尺寸
-        new_w, new_h = 512, 288
-        
-        frame_resized = cv2.resize(frame, (new_w, new_h))
-        
-        # 归一化到 [0, 1]
-        if frame_resized.dtype == np.uint8:
-            frame_f = frame_resized.astype(np.float32) / 255.0
-        else:
-            frame_f = frame_resized.astype(np.float32)
-        
-        # 添加 alpha 通道（CorridorKey 需要 4 通道）
-        if frame_f.shape[2] == 3:
-            alpha = np.ones((new_h, new_w, 1), dtype=np.float32)
-            frame_f = np.concatenate([frame_f, alpha], axis=2)
-        
-        # 转换格式 (B, C, H, W)
-        tensor = torch.from_numpy(frame_f).permute(2, 0, 1).unsqueeze(0)
-        tensor = tensor.to(self.device)
-        
-        return tensor, (h, w)
-    
-    def _physical_separation(self, fg_tensor: torch.Tensor, bg_tensor: torch.Tensor) -> torch.Tensor:
-        """物理分离前景/背景
-        
-        核心算法：通过光场物理模型分离前景和背景
-        保留毛发、运动模糊、半透明效果
-        """
-        # 简单的物理分离实现（基于光场差异）
-        # 实际 CorridorKey 有更复杂的模型
-        
-        diff = torch.abs(fg_tensor - bg_tensor)
-        
-        # 计算 alpha：差异大的区域 = 前景
-        alpha = torch.mean(diff, dim=1, keepdim=True)
-        
-        # 增强对比度
-        alpha = torch.pow(alpha, 0.5)
-        
-        # 归一化
-        alpha = torch.clamp(alpha, 0, 1)
-        
-        return alpha
-    
-    def _postprocess(self, pha: torch.Tensor, orig_size: Tuple[int, int]) -> np.ndarray:
-        """后处理"""
-        h, w = orig_size
-        
-        # 提取 alpha
-        if pha.dim() == 4:
-            alpha = pha[0, 0]
-        elif pha.dim() == 3:
-            alpha = pha[0]
-        else:
-            alpha = pha
-        
-        # 缩放回原始尺寸
-        alpha = alpha.cpu().numpy()
-        alpha = cv2.resize(alpha, (w, h), interpolation=cv2.INTER_LINEAR)
-        
-        # 归一化
-        alpha = np.clip(alpha, 0, 1).astype(np.float32)
-        
-        return alpha

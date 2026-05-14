@@ -14,6 +14,7 @@ from typing import List, Optional, Tuple
 from pathlib import Path
 
 from ..config import MattingConfig
+from ..utils.model_paths import models_root
 
 
 class SAM2Matte:
@@ -30,10 +31,9 @@ class SAM2Matte:
         """加载 SAM2 模型"""
         try:
             print("[SAM2] Loading model...")
-            
-            # SAM2 使用 HuggingFace 或本地缓存
-            cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
-            model_id = "facebook/sam2-hiera-base-plus"
+
+            cache_dir = models_root()
+            model_id = "sam2"  # 改为本地目录名
             
             # 检查本地缓存
             local_path = cache_dir / "models--facebook--sam2.1-hiera-base-plus"
@@ -78,7 +78,7 @@ class SAM2Matte:
         """下载 SAM2 模型"""
         import urllib.request
         
-        model_dir = Path.home() / ".cache" / "matteflow" / "models" / "sam2"
+        model_dir = models_root() / "sam2"
         model_dir.mkdir(parents=True, exist_ok=True)
         
         model_path = model_dir / "sam2_hiera_base_plus.pt"

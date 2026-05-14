@@ -122,9 +122,9 @@ class MattingConfig:
     output_debug: bool = False            # 是否输出中间调试图
     
     # EZ-CorridorKey 风格四通道输出
-    output_fg: bool = True                # 输出直接前景 (Straight FG)
+    output_fg: bool = False               # 输出直接前景 (Straight FG)
     output_matte: bool = True             # 输出线性 Alpha (Linear Matte)
-    output_comp: bool = True              # 输出预乘合成 (Premultiplied Comp)
+    output_comp: bool = False             # 输出预乘合成 (Premultiplied Comp)
     output_processed: bool = True         # 输出处理后 RGBA
     
     # EXR 压缩选项
@@ -146,7 +146,38 @@ class MattingConfig:
     max_resolution: Optional[int] = None  # 最大处理分辨率
     batch_size: int = 1                   # 批处理大小
     num_workers: int = 4                  # 并行 worker 数
+    gvm_max_internal_size: int = 768      # GVM 默认内部推理尺寸上限
+    generate_zip_by_default: bool = False # GUI 默认不同步生成 ZIP
+    preview_quality_mode: str = "fast"    # "fast" | "full"
     
     # ==================== 模型参数 ====================
     model_resolution: int = 2048          # 模型推理分辨率 1024 | 2048
     optimization_mode: str = "auto"       # "auto" | "speed" | "lowvram"
+
+    @property
+    def despeckle_enable(self) -> bool:
+        """兼容旧字段名，映射到当前的自动去噪开关。"""
+        return self.auto_despeckle
+
+    @despeckle_enable.setter
+    def despeckle_enable(self, value: bool) -> None:
+        self.auto_despeckle = value
+
+    @property
+    def despeckle_radius(self) -> int:
+        """兼容旧字段名，映射到当前的去噪模糊半径。"""
+        return self.despeckle_blur
+
+    @despeckle_radius.setter
+    def despeckle_radius(self, value: int) -> None:
+        self.despeckle_blur = value
+        self.despeckle_dilation = value
+
+    @property
+    def despeckle_threshold(self) -> float:
+        """兼容旧字段名，按旧 GUI 的 0~1 阈值语义暴露。"""
+        return self.clip_black
+
+    @despeckle_threshold.setter
+    def despeckle_threshold(self, value: float) -> None:
+        self.clip_black = value

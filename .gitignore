@@ -5,7 +5,6 @@ __pycache__/
 *.so
 .Python
 build/
-develop-eggs/
 dist/
 downloads/
 eggs/
@@ -16,48 +15,73 @@ parts/
 sdist/
 var/
 wheels/
+share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+pip-wheel-metadata/
 
-# Virtual Environment
-.venv/
+# Virtual environments
 venv/
 ENV/
 env/
+.venv/
 
-# IDE
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyre/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+.cache/
+.worktrees/
+
+# IDE and editor files
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
 
-# Output
+# Gradio
+.gradio/
+
+# Runtime outputs and local artifacts
 output/
+outputs/
 test_output/
 test_output_manual/
-
-# Temporary
 tmp/
 temp/
 *.tmp
+preview.webm
+frames.zip
 
-# OS
+# Models and checkpoints (large local files)
+models/
+checkpoints/
+*.pth
+*.pt
+*.onnx
+*.ckpt
+*.safetensors
+
+# External repos cloned temporarily
+corridorkey_temp/
+rvm_temp/
+
+# OS files
 .DS_Store
 Thumbs.db
 
 # Logs
 *.log
 
-# Model cache
-*.pth
-*.pt
-*.safetensors
-*.onnx
-models/
-checkpoints/
-
-
-# 暂时忽略
-docs/
+# Test caches
+tests/**/__pycache__/
+tests/.pytest_cache/

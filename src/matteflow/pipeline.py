@@ -1,5 +1,6 @@
 """MatteFlow 主 Pipeline"""
 
+import logging
 import time
 from pathlib import Path
 from typing import Union, Optional
@@ -14,6 +15,8 @@ from .refine.color_decontaminate import ColorDecontaminate
 from .refine.despeckle import Despeckle
 from .temporal.temporal_stabilizer import TemporalStabilizer
 from .output.encoder import RGBAEncoder
+
+logger = logging.getLogger(__name__)
 
 
 class MattingPipeline:
@@ -57,56 +60,101 @@ class MattingPipeline:
         input_path = Path(input_path)
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(
+            "Starting process: input=%s output=%s quality=%s use_ai=%s ai_model=%s",
+            input_path,
+            output_dir,
+            getattr(self.config.quality_mode, "value", self.config.quality_mode),
+            getattr(self.config, "use_ai", False),
+            getattr(self.config, "ai_model", "auto"),
+        )
         
         start_time = time.time()
+        timings = {}
         
         # 1. 输入解码
         self._notify(progress_callback, 0, 100, "decoding")
+        stage_start = time.time()
         frames, meta = self._decode_input(input_path)
+        timings["decode"] = time.time() - stage_start
         total_frames = len(frames)
         
         if total_frames == 0:
             raise ValueError(f"No frames found in {input_path}")
         
-        print(f"[MatteFlow] Loaded {total_frames} frames, resolution={meta['width']}x{meta['height']}")
+        logger.info(
+            "Loaded %s frames, resolution=%sx%s",
+            total_frames,
+            meta["width"],
+            meta["height"],
+        )
         
         # 2. 背景模式识别
         self._notify(progress_callback, 5, 100, "analyzing")
+        stage_start = time.time()
         if self.config.background_mode == BackgroundMode.AUTO:
             bg_mode = self.analyzer.analyze(frames)
             self.config.background_mode = bg_mode
-            print(f"[MatteFlow] Auto-detected background: {bg_mode.value}")
+            logger.info("Auto-detected background: %s", bg_mode.value)
         else:
             bg_mode = self.config.background_mode
+            logger.info("Using configured background mode: %s", bg_mode.value)
+        timings["analyze"] = time.time() - stage_start
         
         # 3. 生成 Matte
         self._notify(progress_callback, 10, 100, "matting")
+        stage_start = time.time()
         alphas = self._generate_matte(frames, bg_mode, progress_callback)
+        timings["matte"] = time.time() - stage_start
         
         # 4. 边缘细化
+        timings["refine"] = 0.0
         if self.config.quality_mode in (QualityMode.STANDARD, QualityMode.HIGH):
             self._notify(progress_callback, 50, 100, "refining")
+            stage_start = time.time()
             alphas = self.refiner.refine(frames, alphas)
+            timings["refine"] = time.time() - stage_start
+        else:
+            logger.info("Skipping refine stage for quality mode: %s", self.config.quality_mode.value)
         
         # 5. 去噪点（EZ-CorridorKey 风格）
+        timings["despeckle"] = 0.0
         if self.config.quality_mode in (QualityMode.STANDARD, QualityMode.HIGH):
             self._notify(progress_callback, 55, 100, "despeckling")
+            stage_start = time.time()
             alphas = self.despeckle.process(alphas)
+            timings["despeckle"] = time.time() - stage_start
+        else:
+            logger.info("Skipping despeckle stage for quality mode: %s", self.config.quality_mode.value)
         
         # 6. 时序稳定（移到颜色去污染之前，避免绿色泄漏）
+        timings["stabilize"] = 0.0
         if self.config.quality_mode in (QualityMode.STANDARD, QualityMode.HIGH) and total_frames > 1:
             self._notify(progress_callback, 60, 100, "stabilizing")
+            stage_start = time.time()
             alphas = self.stabilizer.stabilize(alphas)
+            timings["stabilize"] = time.time() - stage_start
+        else:
+            logger.info(
+                "Skipping stabilize stage: quality=%s total_frames=%s",
+                self.config.quality_mode.value,
+                total_frames,
+            )
         
         # 7. 颜色去污染（在时序稳定之后，基于稳定的 alpha）
         self._notify(progress_callback, 75, 100, "decontaminating")
+        stage_start = time.time()
         frames = self.decontaminate.process(frames, alphas, bg_mode)
+        timings["decontaminate"] = time.time() - stage_start
         
         # 7. RGBA 合成与输出
         self._notify(progress_callback, 85, 100, "encoding")
+        stage_start = time.time()
         self._encode_output(frames, alphas, output_dir, meta)
+        timings["encode"] = time.time() - stage_start
         
         elapsed = time.time() - start_time
+        timings["total"] = elapsed
         fps = total_frames / elapsed if elapsed > 0 else 0
         
         result = {
@@ -117,9 +165,31 @@ class MattingPipeline:
             "quality_mode": self.config.quality_mode.value if hasattr(self.config.quality_mode, 'value') else str(self.config.quality_mode),
             "elapsed_time": elapsed,
             "fps": fps,
+            "timings": timings,
         }
         
-        print(f"[MatteFlow] Done! {total_frames} frames in {elapsed:.1f}s ({fps:.2f} fps)")
+        logger.info(
+            "Stage timings summary: "
+            "decode=%.2fs analyze=%.2fs matte=%.2fs refine=%.2fs "
+            "despeckle=%.2fs stabilize=%.2fs decontaminate=%.2fs encode=%.2fs total=%.2fs",
+            timings["decode"],
+            timings["analyze"],
+            timings["matte"],
+            timings["refine"],
+            timings["despeckle"],
+            timings["stabilize"],
+            timings["decontaminate"],
+            timings["encode"],
+            timings["total"],
+        )
+        logger.info(
+            "Process completed: frames=%s elapsed=%.1fs fps=%.2f background=%s output=%s",
+            total_frames,
+            elapsed,
+            fps,
+            bg_mode.value if hasattr(bg_mode, "value") else str(bg_mode),
+            output_dir,
+        )
         return result
     
     def _decode_input(self, input_path: Path):
@@ -174,7 +244,7 @@ class MattingPipeline:
                 fg = rgba[:, :, :3]  # RGB only
                 out_path = fg_dir / f"fg_{i:06d}.png"
                 self.encoder.encode_image(fg, out_path)
-                print(f"[Pipeline] Saved FG: {out_path}")
+            logger.info("Saved %s FG frames to %s", len(rgba_frames), fg_dir)
         
         # 2. Matte (Linear alpha) - 线性 alpha 遮罩
         if self.config.output_matte:
@@ -184,7 +254,7 @@ class MattingPipeline:
                 matte = (alpha * 255).astype(np.uint8)
                 out_path = matte_dir / f"matte_{i:06d}.png"
                 self.encoder.encode_grayscale(matte, out_path)
-                print(f"[Pipeline] Saved Matte: {out_path}")
+            logger.info("Saved %s matte frames to %s", len(alphas), matte_dir)
         
         # 3. Comp (Premultiplied) - 预乘合成
         if self.config.output_comp:
@@ -196,7 +266,7 @@ class MattingPipeline:
                 comp = rgb * alpha  # 预乘
                 out_path = comp_dir / f"comp_{i:06d}.png"
                 self.encoder.encode_image(comp, out_path)
-                print(f"[Pipeline] Saved Comp: {out_path}")
+            logger.info("Saved %s comp frames to %s", len(rgba_frames), comp_dir)
         
         # 4. Processed (RGBA) - 处理后完整 RGBA
         if self.config.output_processed:
@@ -205,7 +275,7 @@ class MattingPipeline:
             for i, rgba in enumerate(rgba_frames):
                 out_path = processed_dir / f"processed_{i:06d}.png"
                 self.encoder.encode_image(rgba, out_path)
-                print(f"[Pipeline] Saved Processed: {out_path}")
+            logger.info("Saved %s processed RGBA frames to %s", len(rgba_frames), processed_dir)
         
         # 输出遮罩（可选）
         if self.config.output_mask:
@@ -215,6 +285,7 @@ class MattingPipeline:
                 mask = (alpha * 255).astype(np.uint8)
                 out_path = mask_dir / f"mask_{i:06d}.png"
                 self.encoder.encode_grayscale(mask, out_path)
+            logger.info("Saved %s mask frames to %s", len(alphas), mask_dir)
     
     def _notify(self, callback, current, total, stage):
         """通知进度"""

@@ -19,18 +19,23 @@ MatteFlow 是一个高质量视频抠图工具，支持绿幕/黑底视频透明
 ### 安装
 
 ```bash
-# 克隆仓库
-git clone https://github.com/yourusername/MatteFlow.git
+# 1. 克隆仓库（首次）
+git clone <仓库地址>
 cd MatteFlow
 
-# 创建虚拟环境
-python -m venv .venv
-source .venv/bin/activate  # Linux/Mac
-# 或 .venv\Scripts\activate  # Windows
-
-# 安装依赖
+# 2. 创建虚拟环境并安装依赖
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
+
+# 3. 下载模型
+python scripts/download_models.py --all
+
+# 4. 运行项目
+python scripts/web_gui.py
 ```
+
+示例测试资源位于 `assets/video/`，例如 `assets/video/test_green_2.mp4`。
 
 ### 启动 Web UI
 
@@ -39,6 +44,12 @@ python scripts/web_gui.py
 ```
 
 访问 http://localhost:7860
+
+### 模型与运行时
+
+- 模型权重默认位于项目根目录的 `models/`
+- 已 vendored 的运行时代码位于 `src/matteflow/vendor/`
+- 主工作区当前已切换 vendored 的入口优先包含 `GVM`
 
 ### 命令行使用
 
@@ -77,7 +88,9 @@ MatteFlow/
 │   │   └── rembg_matte.py
 │   ├── refine/             # 边缘细化
 │   ├── temporal/           # 时序稳定
-│   └── output/             # 输出编码
+│   ├── utils/              # 工具与模型检查
+│   └── vendor/             # 内聚的第三方运行时代码
+├── assets/                 # 示例图片与测试视频
 ├── scripts/                # 脚本
 │   └── web_gui.py          # Web 界面
 ├── tests/                  # 测试

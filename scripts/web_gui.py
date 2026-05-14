@@ -1,6 +1,4 @@
 """
-MatteFlow Web GUI - EZ-CorridorKey 风格布局
-
 用法:
     python scripts/web_gui.py
     python scripts/web_gui.py --port 7860
@@ -12,9 +10,10 @@ import sys
 from pathlib import Path
 
 project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root / "src"))
 
 import argparse
+import logging
 import tempfile
 import zipfile
 import cv2
@@ -22,8 +21,15 @@ import numpy as np
 import gradio as gr
 from PIL import Image
 
-from src.matteflow import MattingPipeline, MattingConfig, QualityMode, BackgroundMode
-from src.matteflow.utils.model_checker import ModelChecker
+from matteflow import MattingPipeline, MattingConfig, QualityMode, BackgroundMode
+from matteflow.utils.cv_compat import video_writer_fourcc
+from matteflow.utils.model_checker import ModelChecker
+from matteflow.utils.output_paths import (
+    resolve_project_output_dir,
+    sanitize_output_name,
+)
+
+logger = logging.getLogger(__name__)
 
 # 全局状态
 _output_dir = None
@@ -34,7 +40,25 @@ _model_checker = ModelChecker()
 _available_models = _model_checker.get_available_models()
 _ui_choices = _model_checker.get_ui_choices()
 
-print(f"[MatteFlow] Available models: {_available_models}")
+
+def _configure_logging(debug: bool = False) -> None:
+    logging.basicConfig(
+        level=logging.DEBUG if debug else logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        force=True,
+    )
+
+
+def _sanitize_output_name(name: str) -> str:
+    return sanitize_output_name(name)
+
+
+def _resolve_gui_output_dir(video_path, output_root: Path | None = None) -> Path:
+    return resolve_project_output_dir(
+        Path(video_path),
+        project_root=project_root,
+        output_root=output_root,
+    )
 
 
 def process_video(
@@ -55,14 +79,13 @@ def process_video(
     black_particle,
     edge_softness,
     temporal_strength,
-    # Chroma Key 参数(对齐 EZ-CorridorKey)
+    # Chroma Key 参数
     screen_color,
     key_strength,
     clip_black,
     clip_white,
     shrink_grow,
     edge_blur,
-    # EZ-CorridorKey 风格参数
     edge_refinement,
     edge_radius,
     edge_threshold,
@@ -75,7 +98,6 @@ def process_video(
     output_format,
     output_premultiply,
     output_invert,
-    # EZ-CorridorKey 参数
     despeckle_enable,
     despeckle_radius,
     despeckle_threshold,
@@ -155,7 +177,7 @@ def process_video(
     config.ai_enhance_gain = ai_gain
     config.ai_enhance_sharpen = ai_sharpen
 
-    # Chroma Key 参数(对齐 EZ-CorridorKey)
+    # Chroma Key 参数
     config.screen_color = screen_color
     config.key_strength = key_strength
     config.clip_black = clip_black
@@ -163,7 +185,7 @@ def process_video(
     config.shrink_grow = shrink_grow
     config.edge_blur = edge_blur
 
-    # EZ-CorridorKey 风格参数
+
     config.despill_enable = despill_enable
     config.despill_strength = despill_strength
     config.despill_color = despill_color
@@ -177,24 +199,42 @@ def process_video(
     config.output_processed = output_processed
 
     # 处理
-    _output_dir = Path(tempfile.mkdtemp(prefix="matteflow_"))
+    _output_dir = _resolve_gui_output_dir(video_path)
+    logger.info(
+        "Starting GUI processing: video=%s output_dir=%s mode=%s quality=%s ai_model=%s",
+        video_path,
+        _output_dir,
+        mode,
+        quality,
+        use_ai,
+    )
     
-    # 调试：打印关键参数
-    print(f"[GUI] Config: screen_color={config.screen_color}, key_strength={config.key_strength}, "
-          f"clip_black={config.clip_black}, clip_white={config.clip_white}, "
-          f"shrink_grow={config.shrink_grow}, edge_blur={config.edge_blur}")
+    logger.info(
+        "GUI key config: screen_color=%s key_strength=%s clip_black=%s clip_white=%s "
+        "shrink_grow=%s edge_blur=%s output_fg=%s output_matte=%s output_comp=%s output_processed=%s",
+        config.screen_color,
+        config.key_strength,
+        config.clip_black,
+        config.clip_white,
+        config.shrink_grow,
+        config.edge_blur,
+        config.output_fg,
+        config.output_matte,
+        config.output_comp,
+        config.output_processed,
+    )
     
-    pipeline = MattingPipeline(config)
-    
-    # 用于实时预览的变量
-    preview_input = None
-    preview_output = None
-
-    def on_progress(current, total, stage):
-        progress(current / total, desc=stage)
-        # 可以在这里更新预览,但 Gradio 的进度回调不支持 yield
-
     try:
+        pipeline = MattingPipeline(config)
+
+        # 用于实时预览的变量
+        preview_input = None
+        preview_output = None
+
+        def on_progress(current, total, stage):
+            progress(current / total, desc=stage)
+            # 可以在这里更新预览,但 Gradio 的进度回调不支持 yield
+
         result = pipeline.process(video_path, _output_dir, on_progress)
 
         # 打包序列帧为 ZIP
@@ -227,18 +267,26 @@ def process_video(
             try:
                 shutil.copy2(str(preview_path), str(gradio_preview_path))
                 preview_video = str(gradio_preview_path.resolve())
-                print(f"[GUI] Copied preview to: {preview_video}")
+                logger.info("Copied preview video to Gradio temp path: %s", preview_video)
             except Exception as e:
                 # 如果复制失败,直接使用原路径
                 preview_video = str(preview_path.resolve())
-                print(f"[GUI] Using original preview: {preview_video}")
+                logger.warning("Failed to copy preview to Gradio temp path, using original preview: %s", preview_video)
         else:
-            print(f"[GUI] Preview not found or empty: {preview_path}")
+            logger.warning("Preview not found or empty: %s", preview_path)
+
+        logger.info(
+            "GUI processing completed: frames=%s elapsed=%.1fs fps=%.2f zip=%s preview=%s",
+            result["frames_processed"],
+            result["elapsed_time"],
+            result["fps"],
+            zip_path,
+            preview_video,
+        )
 
         return preview_video, str(zip_path), status, input_preview, output_preview, result['frames_processed']
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.exception("GUI processing failed for video=%s", video_path)
         return None, None, f"❌ 错误: {str(e)}", None, None, 0
 
 
@@ -248,14 +296,14 @@ def _create_preview_frames(output_dir):
     优先使用 Comp (预乘合成，背景黑色) 或 Processed (RGBA)
     避免使用 FG (未预乘，背景仍是绿色)
     """
-    # 查找输出帧 - 优先顺序：Comp > Processed > FG > Matte
+    # 查找输出帧 - 优先顺序：Processed > Comp > FG > Matte
     frames = []
-    for subdir in ["Comp", "Processed", "FG", "Matte"]:
+    for subdir in ["Processed", "Comp", "FG", "Matte"]:
         subdir_path = output_dir / subdir
         if subdir_path.exists():
             frames = sorted(subdir_path.glob("*.png"))
             if frames:
-                print(f"[GUI] Using {subdir} for preview: {frames[0].name}")
+                logger.info("Using %s frame set for preview image: %s", subdir, frames[0].name)
                 break
 
     # 如果没有子目录,检查根目录
@@ -263,6 +311,7 @@ def _create_preview_frames(output_dir):
         frames = sorted(output_dir.glob("frame_*.png"))
 
     if not frames:
+        logger.warning("No preview frames found in %s", output_dir)
         return None, None
 
     # 取首帧
@@ -279,7 +328,7 @@ def _create_preview_frames(output_dir):
 
     # 判断使用的是哪个目录
     used_subdir = None
-    for subdir in ["Comp", "Processed", "FG", "Matte"]:
+    for subdir in ["Processed", "Comp", "FG", "Matte"]:
         subdir_path = output_dir / subdir
         if subdir_path.exists() and any(subdir_path.glob("*.png")):
             used_subdir = subdir
@@ -322,14 +371,14 @@ def _create_preview_video(output_dir, preview_path):
     避免使用 FG (未预乘，背景仍是绿色)
     """
 
-    # 查找输出帧 - 优先顺序：Comp > Processed > FG > Matte
+    # 查找输出帧 - 优先顺序：Processed > Comp > FG > Matte
     frames = []
-    for subdir in ["Comp", "Processed", "FG", "Matte"]:
+    for subdir in ["Processed", "Comp", "FG", "Matte"]:
         subdir_path = output_dir / subdir
         if subdir_path.exists():
             frames = sorted(subdir_path.glob("*.png"))
             if frames:
-                print(f"[GUI] Using {subdir} for video preview")
+                logger.info("Using %s frame set for preview video", subdir)
                 break
 
     # 如果没有子目录,检查根目录
@@ -337,13 +386,13 @@ def _create_preview_video(output_dir, preview_path):
         frames = sorted(output_dir.glob("frame_*.png"))
 
     if not frames:
-        print(f"[Preview] No frames found in {output_dir}")
+        logger.warning("No frames found for preview video in %s", output_dir)
         return
 
     try:
         import imageio
     except ImportError:
-        print("[Preview] imageio not available, falling back to cv2")
+        logger.warning("imageio not available, falling back to cv2 preview writer")
         _create_preview_video_cv2(output_dir, preview_path)
         return
 
@@ -372,11 +421,11 @@ def _create_preview_video(output_dir, preview_path):
             macro_block_size=1      # 避免自动调整尺寸
         )
     except Exception as e:
-        print(f"[Preview] imageio H.264 failed: {e}, trying default")
+        logger.warning("imageio H.264 writer failed, trying default writer: %s", e)
         try:
             writer = imageio.get_writer(str(preview_path), fps=30)
         except Exception as e2:
-            print(f"[Preview] imageio default failed: {e2}, falling back to cv2")
+            logger.warning("imageio default writer failed, falling back to cv2: %s", e2)
             _create_preview_video_cv2(output_dir, preview_path)
             return
 
@@ -398,7 +447,7 @@ def _create_preview_video(output_dir, preview_path):
         frame_count += 1
 
     writer.close()
-    print(f"[Preview] Created preview video: {preview_path} ({frame_count} frames)")
+    logger.info("Created preview video: %s (%s frames)", preview_path, frame_count)
 
 
 def _create_preview_video_cv2(output_dir, preview_path):
@@ -424,11 +473,11 @@ def _create_preview_video_cv2(output_dir, preview_path):
 
     # 使用 mp4v 编码
     preview_path = preview_path.with_suffix('.mp4')
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    fourcc = video_writer_fourcc("mp4v", cv2)
     writer = cv2.VideoWriter(str(preview_path), fourcc, 30.0, (w, h))
 
     if not writer.isOpened():
-        print("[Preview] CV2 writer failed")
+        logger.warning("CV2 preview writer failed to open for %s", preview_path)
         return
 
     # 创建棋盘格背景
@@ -453,7 +502,7 @@ def _create_preview_video_cv2(output_dir, preview_path):
         writer.write(composed_bgr)
 
     writer.release()
-    print(f"[Preview] Created preview (cv2): {preview_path}")
+    logger.info("Created preview video with cv2 fallback: %s", preview_path)
 
 
 def _create_zip(output_dir, zip_path):
@@ -471,13 +520,13 @@ def _create_zip(output_dir, zip_path):
         all_frames = sorted(output_dir.glob("frame_*.png"))
 
     if not all_frames:
-        print(f"[ZIP] No frames found in {output_dir}")
+        logger.warning("No frames found to pack into zip under %s", output_dir)
         # 创建一个空 ZIP
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             pass
         return
 
-    print(f"[ZIP] Packing {len(all_frames)} frames into {zip_path}")
+    logger.info("Packing %s frames into zip: %s", len(all_frames), zip_path)
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         for frame_path in all_frames:
             # 使用相对路径保持目录结构
@@ -493,7 +542,7 @@ custom_css = """
 """
 
 def create_ui():
-    """创建 EZ-CorridorKey 风格 Gradio UI"""
+    """创建 Gradio UI"""
 
     with gr.Blocks(title="MatteFlow - 专业视频抠图") as app:
 
@@ -552,7 +601,8 @@ def create_ui():
                         label="质量模式"
                     )
 
-                # Chroma Key 参数(对齐 EZ-CorridorKey)
+
+                # Chroma Key 参数
                 with gr.Group(visible=True) as green_params:
                     gr.Markdown("### 🟢 Chroma Key 参数")
 
@@ -618,7 +668,7 @@ def create_ui():
                     edge_soft = gr.Slider(0.0, 1.0, value=0.0, step=0.05, label="边缘柔化")
                     temporal_str = gr.Slider(0.0, 1.0, value=0.5, step=0.05, label="时序稳定")
 
-                # 推理控制(对齐 EZ-CorridorKey)
+                # 推理控制
                 with gr.Group():
                     gr.Markdown("### 🎛️ 推理控制")
 
@@ -663,7 +713,7 @@ def create_ui():
                             output_fg = gr.Checkbox(value=True, label="FG (直接前景)")
                             output_matte = gr.Checkbox(value=True, label="Matte (Alpha)")
                         with gr.Row():
-                            output_comp = gr.Checkbox(value=True, label="Comp (预乘)")
+                            output_comp = gr.Checkbox(value=False, label="Comp (预乘)")
                             output_processed = gr.Checkbox(value=True, label="Processed (RGBA)")
                         output_premultiply = gr.Checkbox(value=False, label="预乘 Alpha")
                         output_invert = gr.Checkbox(value=False, label="反转 Alpha")
@@ -782,14 +832,13 @@ def create_ui():
                 black_particle,
                 edge_soft,
                 temporal_str,
-                # Chroma Key 参数(对齐 EZ-CorridorKey)
+                # Chroma Key 参数
                 screen_color,
                 key_strength,
                 clip_black,
                 clip_white,
                 shrink_grow,
                 edge_blur,
-                # EZ-CorridorKey 风格参数
                 edge_refinement,
                 edge_radius,
                 edge_threshold,
@@ -802,7 +851,6 @@ def create_ui():
                 output_format,
                 output_premultiply,
                 output_invert,
-                # EZ-CorridorKey 参数
                 despeckle_enable,
                 despeckle_radius,
                 despeckle_threshold,
@@ -841,7 +889,6 @@ def create_ui():
 
         **算法选择:**
         - 🏆 **CorridorKey**:绿幕最佳,无需背景图,保留毛发/半透明
-        - 🎬 **BackgroundMattingV2**:效果最佳,需上传纯背景图
         - 🤖 **AI 增强**:传统 + AI 边缘细化,平衡速度质量
         - 📐 **传统算法**:快速,适合简单场景
 
@@ -859,17 +906,17 @@ def main():
     parser.add_argument("--share", action="store_true", help="生成公网链接")
     parser.add_argument("--debug", action="store_true", help="启用调试模式")
     args = parser.parse_args()
-
+    _configure_logging(args.debug)
+    logger.info("Available models: %s", _available_models)
     if args.debug:
-        import logging
-        logging.basicConfig(level=logging.DEBUG)
-        print("[MatteFlow] Debug mode enabled")
+        logger.info("Debug mode enabled")
 
     app = create_ui()
     # 禁用 SSR 模式,避免启动额外进程
     import os
     os.environ["GRADIO_SERVER_NAME"] = "0.0.0.0"
     os.environ["GRADIO_SERVER_PORT"] = str(args.port)
+    logger.info("Launching Gradio UI on port=%s share=%s", args.port, args.share)
 
     app.launch(
         server_name="0.0.0.0",

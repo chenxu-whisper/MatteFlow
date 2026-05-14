@@ -1,16 +1,18 @@
 """模型可用性检查工具"""
 
-import torch
-from pathlib import Path
+import importlib
+import importlib.util
 from typing import Dict, List, Tuple
+
+from .model_paths import model_file, models_root, resolve_snapshot_model_dir
 
 
 class ModelChecker:
     """检查 AI 模型是否可用"""
     
     def __init__(self):
-        self.cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
-        self.matteflow_dir = Path.home() / ".cache" / "matteflow" / "models"
+        self.cache_dir = models_root()
+        self.matteflow_dir = models_root()
         
     def check_all_models(self) -> Dict[str, Dict]:
         """检查所有模型状态"""
@@ -41,26 +43,57 @@ class ModelChecker:
     
     def _check_gvm(self) -> Dict:
         """检查 GVM"""
-        model_path = self.cache_dir / "models--geyongtao--gvm"
+        model_dir = resolve_snapshot_model_dir(
+            self.cache_dir,
+            "geyongtao/gvm",
+            ("unet", "vae", "scheduler"),
+        )
+        model_exists = model_dir is not None
+        cuda_available = False
+        try:
+            torch = importlib.import_module("torch")
+            cuda_available = bool(torch.cuda.is_available())
+        except Exception:
+            cuda_available = False
+
+        if not model_exists:
+            reason = "模型仓库不存在或需要授权"
+        elif not cuda_available:
+            reason = "GVM 仅支持 CUDA GPU"
+        else:
+            reason = None
+
         return {
             "name": "GVM (Generative Video Matting)",
-            "available": model_path.exists(),
-            "path": str(model_path),
+            "available": model_exists and cuda_available,
+            "path": str(model_dir or (self.cache_dir / "models--geyongtao--gvm")),
             "size": "~6 GB",
             "auto_download": False,
-            "reason": "模型仓库不存在或需要授权" if not model_path.exists() else None
+            "reason": reason,
         }
     
     def _check_matanyone2(self) -> Dict:
         """检查 MatAnyone2"""
         model_path = self.matteflow_dir / "matanyone2.pth"
+        available = model_path.exists()
+        reason = None
+
+        if not available:
+            reason = "需要手动下载"
+        else:
+            try:
+                importlib.import_module("matteflow.vendor.matanyone2_module.wrapper")
+            except Exception:
+                available = False
+                reason = "MatAnyone2 vendored runtime 不可导入"
+
         return {
             "name": "MatAnyone2",
-            "available": model_path.exists(),
+            "available": available,
             "path": str(model_path),
             "size": "~135 MB",
             "auto_download": False,
-            "reason": "需要手动下载" if not model_path.exists() else None
+            "reason": reason
         }
     
     def _check_sam2(self) -> Dict:
@@ -89,19 +122,31 @@ class ModelChecker:
     
     def _check_corridorkey(self) -> Dict:
         """检查 CorridorKey"""
-        model_path = Path(__file__).parent.parent / "matte" / "corridorkey" / "model.pth"
+        model_path = model_file("corridorkey.pth")
+        available = model_path.exists()
+        reason = None
+
+        if not available:
+            reason = "需要手动下载"
+        else:
+            try:
+                importlib.import_module("matteflow.vendor.corridorkey_module.inference_engine")
+            except Exception:
+                available = False
+                reason = "CorridorKey vendored runtime 不可导入"
+
         return {
             "name": "CorridorKey",
-            "available": model_path.exists(),
+            "available": available,
             "path": str(model_path),
             "size": "~383 MB",
             "auto_download": False,
-            "reason": "需要手动下载" if not model_path.exists() else None
+            "reason": reason
         }
     
     def _check_rvm(self) -> Dict:
         """检查 RVM"""
-        model_path = self.matteflow_dir / "rvm_mobilenetv3.pth"
+        model_path = model_file("rvm_mobilenetv3.pth")
         return {
             "name": "RVM (Robust Video Matting)",
             "available": model_path.exists(),
@@ -113,13 +158,8 @@ class ModelChecker:
     
     def _check_rembg(self) -> Dict:
         """检查 rembg"""
-        try:
-            import rembg
-            available = True
-            reason = None
-        except ImportError:
-            available = False
-            reason = "未安装 rembg 包"
+        available = importlib.util.find_spec("rembg") is not None
+        reason = None if available else "未安装 rembg 包"
         
         return {
             "name": "rembg",

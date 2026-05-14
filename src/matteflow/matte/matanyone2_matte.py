@@ -1,21 +1,28 @@
-"""MatAnyone2 模块
+"""MatAnyone2 模块.
 
-实用的人物视频抠图框架，保留精细细节
-避免分割式边界，增强真实世界条件下的鲁棒性
-
-模型信息:
-- 大小: ~135 MB
-- 来源: https://github.com/pq-yang/MatAnyone2
-- 论文: CVPR 2026
+实用的人物视频抠图框架，保留精细细节，增强真实世界条件下的鲁棒性。
 """
 
+import importlib
+import logging
+import tempfile
+from pathlib import Path
+from typing import List, Optional
+
+import cv2
 import numpy as np
 import torch
-import torch.nn.functional as F
-from typing import List, Optional
-from pathlib import Path
 
 from ..config import MattingConfig
+from ..utils.model_paths import model_file
+
+logger = logging.getLogger(__name__)
+
+
+def load_matanyone2_processor_class():
+    """Lazy-load the vendored MatAnyone2 processor."""
+    module = importlib.import_module("matteflow.vendor.matanyone2_module.wrapper")
+    return module.MatAnyone2Processor
 
 
 class MatAnyone2Matte:
@@ -30,55 +37,47 @@ class MatAnyone2Matte:
     def _load_model(self):
         """加载 MatAnyone2 模型"""
         try:
-            import sys
-            sys.path.insert(0, "E:/ByteDance/Projects/Code/EZ-CorridorKey")
-            
-            # 使用 EZ-CorridorKey 的 wrapper
-            from modules.MatAnyone2Module.wrapper import MatAnyone2Processor
-            
-            # 检查模型路径
-            ez_ma2_path = Path("E:/ByteDance/Projects/Code/EZ-CorridorKey/modules/MatAnyone2Module/checkpoints/matanyone2.pth")
-            
-            if not ez_ma2_path.exists():
-                print("[MatAnyone2] Model not found, downloading...")
+            MatAnyone2Processor = load_matanyone2_processor_class()
+
+            model_path = self._get_model_path()
+            if not model_path.exists():
+                logger.info("MatAnyone2 model not found, triggering download: %s", model_path)
                 self._download_model()
-                ez_ma2_path = Path.home() / ".cache" / "matteflow" / "models" / "matanyone2.pth"
             
-            print(f"[MatAnyone2] Loading from {ez_ma2_path}...")
+            logger.info("Loading MatAnyone2 model from %s on device=%s", model_path, self.device)
             self.model = MatAnyone2Processor(
                 device=str(self.device),
-                ckpt_path=str(ez_ma2_path),
-                max_internal_size=1080
+                ckpt_path=str(model_path),
+                max_internal_size=1080,
             )
-            print(f"[MatAnyone2] Loaded on {self.device}")
+            logger.info("Loaded MatAnyone2 on %s", self.device)
             
         except Exception as e:
-            print(f"[MatAnyone2] Failed to load: {e}")
-            print("[MatAnyone2] Fallback to traditional")
+            logger.exception("Failed to load MatAnyone2")
+            logger.warning("MatAnyone2 will fall back to traditional processing")
             self.model = None
     
     def _download_model(self):
         """下载 MatAnyone2 模型"""
         import urllib.request
         
-        model_dir = Path.home() / ".cache" / "matteflow" / "models"
+        model_dir = self._get_model_path().parent
         model_dir.mkdir(parents=True, exist_ok=True)
         
         model_path = model_dir / "matanyone2.pth"
         
-        # HuggingFace 模型链接
-        url = "https://huggingface.co/pq-yang/MatAnyone2/resolve/main/matanyone2.pth"
+        url = "https://github.com/pq-yang/MatAnyone2/releases/download/v1.0.0/matanyone2.pth"
         
-        print(f"[MatAnyone2] Downloading from {url}")
-        print("[MatAnyone2] This may take a few minutes...")
+        logger.info("Downloading MatAnyone2 weights from %s", url)
         
         try:
             urllib.request.urlretrieve(url, model_path)
-            print(f"[MatAnyone2] Saved to {model_path}")
+            logger.info("Saved MatAnyone2 weights to %s", model_path)
         except Exception as e:
-            print(f"[MatAnyone2] Download failed: {e}")
-            print("[MatAnyone2] Please download manually from:")
-            print("  https://huggingface.co/pq-yang/MatAnyone2")
+            raise RuntimeError(f"MatAnyone2 download failed: {e}") from e
+
+    def _get_model_path(self) -> Path:
+        return model_file("matanyone2.pth")
     
     def generate(self, frames: List[np.ndarray], first_frame_mask: Optional[np.ndarray] = None) -> List[np.ndarray]:
         """
@@ -92,28 +91,15 @@ class MatAnyone2Matte:
             Alpha 列表
         """
         if self.model is None:
-            print("[MatAnyone2] Model not available")
+            logger.info("Model not available, returning empty alphas for %s frames", len(frames))
             return [np.ones(f.shape[:2], dtype=np.float32) * 0.5 for f in frames]
         
         try:
-            # MatAnyone2 处理逻辑
-            alphas = []
-            prev_alpha = None
-            
-            for i, frame in enumerate(frames):
-                if i == 0 and first_frame_mask is not None:
-                    alpha = self._process_first_frame(frame, first_frame_mask)
-                else:
-                    alpha = self._process_frame(frame, prev_alpha)
-                
-                alphas.append(alpha)
-                prev_alpha = alpha
-            
-            # 注意：后处理由 hybrid_matte 统一处理，避免重复
-            return alphas
+            logger.info("Starting MatAnyone2 sequence inference for %s frames", len(frames))
+            return self._run_sequence_inference(frames, first_frame_mask)
             
         except Exception as e:
-            print(f"[MatAnyone2] Inference failed: {e}")
+            logger.exception("MatAnyone2 inference failed")
             return [np.ones(f.shape[:2], dtype=np.float32) * 0.5 for f in frames]
     
     def _apply_chroma_key_postprocess(self, alphas: List[np.ndarray]) -> List[np.ndarray]:
@@ -121,49 +107,59 @@ class MatAnyone2Matte:
         from .chroma_key_postprocess import apply_chroma_key_postprocess
         return apply_chroma_key_postprocess(alphas, self.config)
     
-    def _process_first_frame(self, frame: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        """处理首帧"""
-        # 预处理
-        frame_tensor = self._preprocess(frame)
-        mask_tensor = torch.from_numpy(mask).unsqueeze(0).unsqueeze(0).float().to(self.device)
-        
-        # 推理
-        with torch.no_grad():
-            alpha = self.model(frame_tensor, mask_tensor)
-        
-        return self._postprocess(alpha)
-    
-    def _process_frame(self, frame: np.ndarray, prev_alpha: Optional[np.ndarray] = None) -> np.ndarray:
-        """处理后续帧"""
-        frame_tensor = self._preprocess(frame)
-        
-        # 使用前一帧 alpha 作为记忆
-        if prev_alpha is not None:
-            prev_tensor = torch.from_numpy(prev_alpha).unsqueeze(0).unsqueeze(0).float().to(self.device)
-        else:
-            prev_tensor = None
-        
-        with torch.no_grad():
-            alpha = self.model(frame_tensor, prev_tensor)
-        
-        return self._postprocess(alpha)
-    
-    def _preprocess(self, frame: np.ndarray) -> torch.Tensor:
-        """预处理帧"""
-        # 归一化
-        frame = frame.astype(np.float32) / 255.0
-        
-        # 转换为 tensor
-        frame_tensor = torch.from_numpy(frame).permute(2, 0, 1).unsqueeze(0)
-        frame_tensor = frame_tensor.to(self.device)
-        
-        return frame_tensor
-    
-    def _postprocess(self, alpha: torch.Tensor) -> np.ndarray:
-        """后处理 alpha"""
-        alpha = alpha.squeeze().cpu().numpy()
-        alpha = np.clip(alpha, 0, 1)
-        return alpha
+    def _run_sequence_inference(
+        self, frames: List[np.ndarray], first_frame_mask: Optional[np.ndarray]
+    ) -> List[np.ndarray]:
+        if not frames:
+            return []
+        if self.model is None:
+            raise RuntimeError("MatAnyone2 model is not loaded")
+
+        # 上游 decoder 已统一输出 RGB，这里直接透传，避免重复变换导致颜色偏移
+        rgb_frames = frames
+        mask = self._resolve_first_frame_mask(frames[0], first_frame_mask)
+        frame_names = [f"frame_{index:06d}" for index in range(len(frames))]
+
+        with tempfile.TemporaryDirectory(prefix="matanyone2-") as temp_dir:
+            output_dir = Path(temp_dir) / "AlphaHint"
+            logger.info(
+                "Prepared MatAnyone2 temporary workspace: output_dir=%s frame_count=%s",
+                output_dir,
+                len(frame_names),
+            )
+            self.model.process_frames(
+                input_frames=rgb_frames,
+                mask_frame=mask,
+                output_dir=str(output_dir),
+                frame_names=frame_names,
+                clip_name="matteflow",
+            )
+
+            alphas = []
+            for frame_name in frame_names:
+                alpha_path = output_dir / f"{frame_name}.png"
+                alpha = cv2.imread(str(alpha_path), cv2.IMREAD_UNCHANGED)
+                if alpha is None:
+                    raise RuntimeError(f"Failed to read MatAnyone2 output matte: {alpha_path}")
+                if alpha.ndim == 3:
+                    alpha = alpha[..., 0]
+                alphas.append(alpha.astype(np.float32) / 255.0)
+
+            logger.info("Completed MatAnyone2 inference with %s matte frames", len(alphas))
+            return alphas
+
+    def _resolve_first_frame_mask(
+        self, first_frame: np.ndarray, first_frame_mask: Optional[np.ndarray]
+    ) -> np.ndarray:
+        if first_frame_mask is None:
+            return np.full(first_frame.shape[:2], 255, dtype=np.uint8)
+
+        mask = np.asarray(first_frame_mask)
+        if mask.ndim == 3:
+            mask = mask[..., 0]
+        if mask.dtype != np.uint8:
+            mask = np.clip(mask, 0, 255).astype(np.uint8)
+        return mask
     
     def generate_sequence(self, frames: List[np.ndarray]) -> List[np.ndarray]:
         """序列处理"""

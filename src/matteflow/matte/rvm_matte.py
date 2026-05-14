@@ -1,15 +1,12 @@
 """RVM (Robust Video Matting) AI 抠图模块"""
 
-import os
-import sys
-import numpy as np
 import cv2
+import numpy as np
 import torch
-import torch.nn.functional as F
 from typing import List, Optional
-from pathlib import Path
 
 from ..config import MattingConfig
+from ..utils.model_paths import model_file
 
 
 class RVMMatte:
@@ -38,22 +35,12 @@ class RVMMatte:
     def _load_model(self):
         """加载 RVM 模型"""
         try:
-            rvm_path = Path(__file__).parent / "rvm"
-            if str(rvm_path.parent) not in sys.path:
-                sys.path.insert(0, str(rvm_path.parent))
-            
-            import importlib.util
-            spec = importlib.util.spec_from_file_location('rvm', str(rvm_path / '__init__.py'))
-            rvm_pkg = importlib.util.module_from_spec(spec)
-            sys.modules['rvm'] = rvm_pkg
-            
-            from rvm.model import MattingNetwork
+            from .rvm import MattingNetwork
             
             print("[RVM] Creating model...")
             self.model = MattingNetwork(self.model_type).eval().to(self.device)
-            
-            cache_dir = Path.home() / ".cache" / "matteflow" / "models"
-            model_path = cache_dir / f"rvm_{self.model_type}.pth"
+
+            model_path = model_file(f"rvm_{self.model_type}.pth")
             
             if not model_path.exists():
                 raise FileNotFoundError(f"Model not found: {model_path}")
