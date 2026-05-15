@@ -163,6 +163,8 @@ class GVMProcessor:
                          mode='matte',
                          write_video=True,
                          direct_output_dir=None,
+                         base_res=None,
+                         scale_cap=None,
                          progress_callback=None):
         """
         Process a single video or directory of images.
@@ -200,8 +202,8 @@ class GVMProcessor:
         # MPS (Apple Silicon): reduce resolution to fit in unified memory.
         # SDPA on MPS has no FlashAttention, so O(N^2) memory scales fast.
         is_mps = self.device.type == 'mps'
-        _base_res = 512 if is_mps else 1024
-        _scale_cap = 960 if is_mps else 1920
+        _base_res = int(base_res or (512 if is_mps else 1024))
+        _scale_cap = int(scale_cap or (960 if is_mps else 1920))
 
         target_h = orig_h
         if target_h < _base_res:

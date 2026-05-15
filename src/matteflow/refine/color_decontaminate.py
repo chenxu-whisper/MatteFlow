@@ -31,20 +31,22 @@ class ColorDecontaminate:
         
         strength = self.config.green_despill_strength
         
-        # 1. 严格检测绿色溢色：必须 G 明显大于 R 和 B
-        # 条件：G > R + threshold 且 G > B + threshold
-        threshold = 15  # 严格阈值，避免误判
+        # 1. 检测绿色溢色。主体边缘仍使用严格阈值，半透明辉光区使用更敏感阈值。
+        threshold = 15
         green_tint = (g > r + threshold) & (g > b + threshold)
         
         # 2. 强白色保护 - 避免把白色/灰色去成粉色
         brightness = np.mean(result, axis=2)
         # 白色 = 高亮度 + 低饱和度（RGB接近）
         rgb_diff = np.abs(r - g) + np.abs(g - b) + np.abs(r - b)
-        white_mask = (brightness > 180) & (rgb_diff < 30)  # 严格的白色条件
+        white_brightness = getattr(self.config, "white_protect_brightness", 180)
+        white_saturation = getattr(self.config, "white_protect_saturation", 25)
+        white_mask = (brightness > white_brightness) & (rgb_diff < white_saturation)
         
-        # 3. 只处理边缘区域（alpha 在 0.05-0.95 之间）
-        # 完全前景和完全背景不处理
+        # 3. 只处理边缘/半透明区域，完全前景和完全背景不处理
         edge_mask = (alpha > 0.05) & (alpha < 0.95)
+        glow_mask = (alpha > 0.005) & (alpha < 0.85)
+        subtle_green_haze = (g > r + 4) & (g >= b - 3) & glow_mask
         
         # 4. 计算绿色过量（只在边缘且明显发绿的地方）
         green_excess = np.maximum(0, g - np.maximum(r, b))
@@ -52,9 +54,20 @@ class ColorDecontaminate:
         # 边缘去绿：alpha 越低（越接近背景）→ 去绿越强
         edge_factor = np.clip((0.95 - alpha) / 0.9, 0, 1)  # 0.05→1.0, 0.95→0.0
         despill = green_excess * strength * edge_factor * self.config.edge_despill_factor
+        haze_excess = np.maximum(0, g - r - 2)
+        haze_factor = np.clip((0.7 - alpha) / 0.7, 0, 1)
+        haze_despill = haze_excess * strength * haze_factor * self.config.edge_despill_factor
+        target_haze_despill = (
+            np.maximum(0, g - np.maximum(r, b) - 3)
+            * strength
+            * self.config.edge_despill_factor
+        )
         
-        # 只处理明显发绿的边缘
-        despill = despill * green_tint * edge_mask
+        # 主体边缘只处理明显发绿；辉光区额外处理低饱和绿色雾边。
+        despill_mask = (green_tint & edge_mask) | subtle_green_haze
+        glow_despill = np.maximum(haze_despill, target_haze_despill)
+        despill = np.where(subtle_green_haze, np.maximum(despill, glow_despill), despill)
+        despill = despill * despill_mask
         
         # 白色区域：几乎不去绿（保护白色毛发/耳朵）
         despill = np.where(white_mask, despill * 0.05, despill)
@@ -67,6 +80,15 @@ class ColorDecontaminate:
         r_corrected = r + compensation
         b_corrected = b + compensation
         
+        # 7. 半透明辉光补亮：AI/绿幕融合会保留 alpha，但 RGB 仍可能是暗背景色，
+        # 合成到棋盘或任意背景上会表现为黑边。只修低亮度半透明区，避开主体白色区域。
+        corrected_brightness = (r_corrected + g_corrected + b_corrected) / 3.0
+        dark_glow = (alpha > 0.08) & (alpha < 0.75) & (corrected_brightness < 95) & (~white_mask)
+        lift = np.clip((115 - corrected_brightness) * 0.9, 0, 65) * dark_glow
+        r_corrected = r_corrected + lift * 1.20
+        g_corrected = g_corrected + lift * 0.12
+        b_corrected = b_corrected + lift * 1.05
+
         result[:, :, 0] = np.clip(r_corrected, 0, 255)
         result[:, :, 1] = np.clip(g_corrected, 0, 255)
         result[:, :, 2] = np.clip(b_corrected, 0, 255)

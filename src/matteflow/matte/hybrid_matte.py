@@ -378,7 +378,7 @@ class HybridMatte:
                 ai_alphas = self.rvm.generate_sequence(frames, progress_callback)
         
         if ai_alphas is not None:
-            ai_alphas = self._merge_green_screen_effects(base_alphas, ai_alphas)
+            ai_alphas = self._merge_green_screen_effects(base_alphas, ai_alphas, frames)
             # 应用 Chroma Key 后处理
             from .chroma_key_postprocess import apply_chroma_key_postprocess
             return apply_chroma_key_postprocess(ai_alphas, self.config)
@@ -389,6 +389,7 @@ class HybridMatte:
         self,
         base_alphas: List[np.ndarray],
         ai_alphas: List[np.ndarray],
+        frames: List[np.ndarray] | None = None,
     ) -> List[np.ndarray]:
         """Preserve transparent screen-space effects that AI subject mattes often drop."""
         preserve = float(np.clip(getattr(self.config, "transparency_preserve", 0.7), 0.0, 1.0))
@@ -396,12 +397,62 @@ class HybridMatte:
             return ai_alphas
 
         merged: List[np.ndarray] = []
-        for base_alpha, ai_alpha in zip(base_alphas, ai_alphas):
+        frame_iter = frames if frames is not None else [None] * len(base_alphas)
+        for base_alpha, ai_alpha, frame in zip(base_alphas, ai_alphas, frame_iter):
             base_alpha = base_alpha.astype(np.float32, copy=False)
             ai_alpha = ai_alpha.astype(np.float32, copy=False)
-            effect_alpha = base_alpha * preserve
-            merged.append(np.maximum(ai_alpha, effect_alpha))
+            background_floor = float(np.percentile(base_alpha, 10))
+            effect_floor = max(0.28, background_floor + 0.04)
+            effect_alpha = np.clip((base_alpha - effect_floor) / (1.0 - effect_floor), 0.0, 1.0)
+            effect_alpha = np.power(effect_alpha, 2.0)
+            if frame is not None:
+                effect_alpha = effect_alpha * self._green_screen_effect_color_weight(frame)
+            effect_alpha = effect_alpha * preserve
+            if frame is not None:
+                solid_color_mask = self._green_screen_solid_foreground_mask(frame)
+                soft_subject_mask = self._green_screen_soft_subject_mask(frame)
+                solid_mask = ((base_alpha >= 0.94) & solid_color_mask) | (
+                    (base_alpha >= 0.30) & soft_subject_mask
+                )
+                solid_foreground = np.where(solid_mask, 1.0, 0.0)
+            else:
+                solid_foreground = np.where(base_alpha >= 0.94, base_alpha, 0.0)
+            merged.append(np.maximum.reduce([ai_alpha, effect_alpha, solid_foreground]))
         return merged
+
+    def _green_screen_effect_color_weight(self, frame: np.ndarray) -> np.ndarray:
+        """Keep pink/white glow while suppressing green-screen colored haze blobs."""
+        frame_f = frame.astype(np.float32, copy=False)
+        r, g, b = frame_f[:, :, 0], frame_f[:, :, 1], frame_f[:, :, 2]
+        brightness = (r + g + b) / 3.0
+        chroma = np.maximum.reduce([r, g, b]) - np.minimum.reduce([r, g, b])
+
+        pink_score = np.clip((r - g - 20.0) / 45.0, 0.0, 1.0)
+        pink_score *= np.clip((b - g + 5.0) / 45.0, 0.0, 1.0)
+        white_glow_score = np.clip((brightness - 185.0) / 50.0, 0.0, 1.0)
+        white_glow_score *= np.clip((90.0 - chroma) / 90.0, 0.0, 1.0)
+
+        return np.maximum(pink_score, white_glow_score)
+
+    def _green_screen_solid_foreground_mask(self, frame: np.ndarray) -> np.ndarray:
+        """Reject green-screen colored false positives while keeping solid subjects/effects."""
+        frame_f = frame.astype(np.float32, copy=False)
+        r, g, b = frame_f[:, :, 0], frame_f[:, :, 1], frame_f[:, :, 2]
+        brightness = (r + g + b) / 3.0
+        chroma = np.maximum.reduce([r, g, b]) - np.minimum.reduce([r, g, b])
+        screen_green = (g > r + 30.0) & (g > b + 20.0) & (g > 90.0)
+        bright_soft_subject = (brightness > 155.0) & (chroma < 90.0)
+        saturated_pink_subject = (r > g + 45.0) & (b > g + 15.0) & (brightness > 135.0)
+        return (~screen_green) & (bright_soft_subject | saturated_pink_subject)
+
+    def _green_screen_soft_subject_mask(self, frame: np.ndarray) -> np.ndarray:
+        """Detect low-saturation bright subject colors such as the rabbit ears."""
+        frame_f = frame.astype(np.float32, copy=False)
+        r, g, b = frame_f[:, :, 0], frame_f[:, :, 1], frame_f[:, :, 2]
+        brightness = (r + g + b) / 3.0
+        chroma = np.maximum.reduce([r, g, b]) - np.minimum.reduce([r, g, b])
+        screen_green = (g > r + 30.0) & (g > b + 20.0) & (g > 90.0)
+        return (~screen_green) & (brightness > 165.0) & (chroma < 75.0)
     
     def _black_background_matte(self, frames: List[np.ndarray], progress_callback) -> List[np.ndarray]:
         """

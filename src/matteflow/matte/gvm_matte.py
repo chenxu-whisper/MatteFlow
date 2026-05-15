@@ -137,12 +137,15 @@ class GVMMatte:
                 if not cv2.imwrite(str(frame_path), frame_bgr):
                     raise RuntimeError(f"Failed to write GVM input frame: {frame_path}")
 
+            gvm_internal_size = getattr(getattr(self, "config", None), "gvm_max_internal_size", 768)
             self.model.process_sequence(
                 input_path=str(input_dir),
                 output_dir=str(temp_root),
                 direct_output_dir=str(alpha_dir),
                 mode="matte",
                 write_video=False,
+                base_res=gvm_internal_size,
+                scale_cap=gvm_internal_size,
             )
 
             alpha_files = sorted(alpha_dir.glob("*.png"))

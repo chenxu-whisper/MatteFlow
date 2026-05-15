@@ -83,6 +83,11 @@ class GreenScreenMatte:
             ref_purity = 0.35  # 典型绿幕的纯度（降低阈值）
         else:
             ref_purity = 0.30  # 蓝幕通常纯度更低
+
+        similarity = float(np.clip(getattr(self.config, "green_similarity", 0.4), 0.1, 1.0))
+        # 0.4 是历史默认值；更高相似度降低参考纯度，抠得更激进。
+        similarity_scale = np.clip(1.0 + (0.4 - similarity) * 0.8, 0.52, 1.35)
+        ref_purity *= similarity_scale
         
         # 归一化：纯度越高 → key 越接近 1（越像背景）
         key = np.clip(screen_purity / ref_purity, 0, 1)

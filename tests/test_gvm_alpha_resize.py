@@ -23,8 +23,10 @@ class _FakeGVMProcessor:
         direct_output_dir: str,
         mode: str,
         write_video: bool,
+        base_res: int | None = None,
+        scale_cap: int | None = None,
     ) -> None:
-        del input_path, output_dir, mode, write_video
+        del input_path, output_dir, mode, write_video, base_res, scale_cap
         alpha = np.full((1024, 1024), 255, dtype=np.uint8)
         out_path = Path(direct_output_dir) / "00000.png"
         assert cv2.imwrite(str(out_path), alpha)
@@ -40,6 +42,24 @@ def test_gvm_sequence_resizes_alpha_back_to_input_frame_shape() -> None:
 
     assert len(alphas) == 1
     assert alphas[0].shape == (960, 960)
+
+
+def test_gvm_sequence_passes_configured_internal_size_to_processor() -> None:
+    class _CapturingGVMProcessor(_FakeGVMProcessor):
+        def process_sequence(self, *args, **kwargs) -> None:
+            self.kwargs = kwargs
+            super().process_sequence(*args, **kwargs)
+
+    matte = GVMMatte.__new__(GVMMatte)
+    matte.config = type("Config", (), {"gvm_max_internal_size": 512})()
+    matte.model = _CapturingGVMProcessor()
+
+    frames = [np.zeros((960, 960, 3), dtype=np.uint8)]
+
+    matte._run_sequence_inference(frames)
+
+    assert matte.model.kwargs["base_res"] == 512
+    assert matte.model.kwargs["scale_cap"] == 512
 
 
 def test_gvm_wrapper_preserves_soft_alpha_values(monkeypatch, tmp_path) -> None:

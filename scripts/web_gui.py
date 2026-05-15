@@ -56,11 +56,37 @@ GUI_DEFAULTS = {
     "despeckle_enable": True,
     "despeckle_radius": 2,
     "despeckle_threshold": 0.0,
+    "transparency_preserve": 0.7,
+    "gvm_max_internal_size": 768,
+    "generate_zip": False,
     "output_fg": False,
     "output_matte": True,
     "output_comp": False,
     "output_processed": True,
 }
+
+GUI_PRIMARY_CONTROL_KEYS = [
+    "use_ai",
+    "quality",
+    "key_strength",
+    "transparency_preserve",
+    "green_despill",
+    "edge_despill_factor",
+    "shrink_grow",
+    "edge_blur",
+    "gvm_max_internal_size",
+]
+
+GUI_FIXED_PARAMETER_DEFAULTS = {
+    "pure_color": GUI_DEFAULTS["pure_color"],
+    "use_filter": GUI_DEFAULTS["use_filter"],
+    "edge_softness": 0.0,
+    "temporal_strength": 0.5,
+    "color_space": "sRGB",
+    "despill_enable": GUI_DEFAULTS["despill_enable"],
+    "despill_color": GUI_DEFAULTS["despill_color"],
+}
+
 RECOMMENDED_PRESET_OUTPUT_KEYS = [
     "mode",
     "quality",
@@ -85,6 +111,9 @@ RECOMMENDED_PRESET_OUTPUT_KEYS = [
     "despeckle_enable",
     "despeckle_radius",
     "despeckle_threshold",
+    "transparency_preserve",
+    "gvm_max_internal_size",
+    "generate_zip",
     "output_fg",
     "output_matte",
     "output_comp",
@@ -121,6 +150,27 @@ def _resolve_gui_output_dir(video_path, output_root: Path | None = None) -> Path
     )
 
 
+def _create_upload_preview(file_path):
+    hide_image = gr.update(value=None, visible=False)
+    hide_video = gr.update(value=None, visible=False)
+    if not file_path:
+        return hide_image, hide_video, "未选择素材"
+
+    path = Path(file_path)
+    suffix = path.suffix.lower()
+    if suffix in IMAGE_EXTENSIONS:
+        if not path.exists():
+            return hide_image, hide_video, f"图片文件不存在: {path.name}"
+        return gr.update(value=str(path), visible=True), hide_video, f"已选择图片: {path.name}"
+
+    if suffix in VIDEO_EXTENSIONS:
+        if not path.exists():
+            return hide_image, hide_video, f"视频文件不存在: {path.name}"
+        return hide_image, gr.update(value=str(path), visible=True), f"已选择视频: {path.name}"
+
+    return hide_image, hide_video, f"不支持的素材格式: {path.suffix}"
+
+
 def _default_ai_choice() -> str:
     preferred = GUI_DEFAULTS["preferred_ai"]
     if any(value == preferred for _, value in _ui_choices):
@@ -153,6 +203,9 @@ def _apply_recommended_preset() -> dict:
         "despeckle_enable": GUI_DEFAULTS["despeckle_enable"],
         "despeckle_radius": GUI_DEFAULTS["despeckle_radius"],
         "despeckle_threshold": GUI_DEFAULTS["despeckle_threshold"],
+        "transparency_preserve": GUI_DEFAULTS["transparency_preserve"],
+        "gvm_max_internal_size": GUI_DEFAULTS["gvm_max_internal_size"],
+        "generate_zip": GUI_DEFAULTS["generate_zip"],
         "output_fg": GUI_DEFAULTS["output_fg"],
         "output_matte": GUI_DEFAULTS["output_matte"],
         "output_comp": GUI_DEFAULTS["output_comp"],
@@ -183,6 +236,8 @@ def process_video(
     black_particle,
     edge_softness,
     temporal_strength,
+    transparency_preserve,
+    gvm_max_internal_size,
     # Chroma Key 参数
     screen_color,
     key_strength,
@@ -190,18 +245,9 @@ def process_video(
     clip_white,
     shrink_grow,
     edge_blur,
-    edge_refinement,
-    edge_radius,
-    edge_threshold,
     despill_enable,
     despill_strength,
     despill_color,
-    temporal_enable,
-    temporal_window,
-    temporal_threshold,
-    output_format,
-    output_premultiply,
-    output_invert,
     despeckle_enable,
     despeckle_radius,
     despeckle_threshold,
@@ -210,18 +256,18 @@ def process_video(
     output_matte,
     output_comp,
     output_processed,
+    generate_zip,
     ai_gamma,
     ai_threshold,
     ai_gain,
     ai_sharpen,
-    bgm2_background,
     progress=gr.Progress()
 ):
     """处理视频 - 带实时预览"""
     global _output_dir
 
     if video_path is None:
-        return None, None, "请先上传视频", None, None, 0
+        return None, None, "请先上传视频", None, None, 0, None
 
     # 构建配置
     config = MattingConfig()
@@ -276,6 +322,8 @@ def process_video(
     config.black_particle_boost = black_particle
     config.edge_softness = edge_softness
     config.temporal_strength = temporal_strength
+    config.transparency_preserve = transparency_preserve
+    config.gvm_max_internal_size = gvm_max_internal_size
     config.ai_enhance_gamma = ai_gamma
     config.ai_enhance_threshold = ai_threshold
     config.ai_enhance_gain = ai_gain
@@ -301,6 +349,7 @@ def process_video(
     config.output_matte = output_matte
     config.output_comp = output_comp
     config.output_processed = output_processed
+    config.generate_zip_by_default = generate_zip
 
     # 处理
     _output_dir = _resolve_gui_output_dir(video_path)
@@ -342,8 +391,9 @@ def process_video(
         result = pipeline.process(video_path, _output_dir, on_progress)
 
         # 打包序列帧为 ZIP
-        zip_path = _output_dir / "frames.zip"
-        _create_zip(_output_dir, zip_path)
+        zip_path = _output_dir / "frames.zip" if generate_zip else None
+        if zip_path is not None:
+            _create_zip(_output_dir, zip_path)
 
         # 生成预览视频
         preview_path = _output_dir / "preview.mp4"
@@ -351,6 +401,7 @@ def process_video(
 
         # 生成首帧预览图
         input_preview, output_preview = _create_preview_frames(_output_dir)
+        transparent_png = _find_transparent_png_download(_output_dir)
 
         status = f"✅ 完成!{result['frames_processed']}帧 | {result['fps']:.1f} fps | 耗时 {result['elapsed_time']:.1f}s"
 
@@ -380,18 +431,27 @@ def process_video(
             logger.warning("Preview not found or empty: %s", preview_path)
 
         logger.info(
-            "GUI processing completed: frames=%s elapsed=%.1fs fps=%.2f zip=%s preview=%s",
+            "GUI processing completed: frames=%s elapsed=%.1fs fps=%.2f zip=%s png=%s preview=%s",
             result["frames_processed"],
             result["elapsed_time"],
             result["fps"],
             zip_path,
+            transparent_png,
             preview_video,
         )
 
-        return preview_video, str(zip_path), status, input_preview, output_preview, result['frames_processed']
+        return (
+            preview_video,
+            str(zip_path) if zip_path else None,
+            status,
+            input_preview,
+            output_preview,
+            result['frames_processed'],
+            str(transparent_png) if transparent_png else None,
+        )
     except Exception as e:
         logger.exception("GUI processing failed for video=%s", video_path)
-        return None, None, f"❌ 错误: {str(e)}", None, None, 0
+        return None, None, f"❌ 错误: {str(e)}", None, None, 0, None
 
 
 def _create_preview_frames(output_dir):
@@ -466,6 +526,21 @@ def _create_preview_frames(output_dir):
     input_preview = img[:, :, :3].astype(np.uint8)
 
     return input_preview, output_preview
+
+
+def _find_transparent_png_download(output_dir):
+    """Return the first RGBA processed PNG for direct single-frame download."""
+    processed_dir = Path(output_dir) / "Processed"
+    if not processed_dir.exists():
+        logger.info("Processed output directory does not exist for PNG download: %s", processed_dir)
+        return None
+
+    frames = sorted(processed_dir.glob("*.png"))
+    if not frames:
+        logger.info("No processed PNG frames available for download in %s", processed_dir)
+        return None
+
+    return frames[0]
 
 
 def _create_preview_video(output_dir, preview_path):
@@ -672,6 +747,19 @@ def create_ui():
                         type="filepath",
                         height=120,
                     )
+                    upload_image_preview = gr.Image(
+                        label="素材预览",
+                        interactive=False,
+                        visible=False,
+                        height=220,
+                    )
+                    upload_video_preview = gr.Video(
+                        label="素材预览",
+                        interactive=False,
+                        visible=False,
+                        height=220,
+                    )
+                    upload_status = gr.Markdown("未选择素材")
 
                 # 引擎选择
                 with gr.Group():
@@ -690,16 +778,6 @@ def create_ui():
                         label="Alpha 生成器 (✅=可用, ❌=未安装)"
                     )
 
-                    # BackgroundMattingV2 背景上传
-                    with gr.Group(visible=False) as bgm2_group:
-                        gr.Markdown("**BackgroundMattingV2 设置**")
-                        bgm2_bg_input = gr.Image(
-                            label="上传纯背景图(空绿幕/黑底)",
-                            type="filepath",
-                            interactive=True
-                        )
-                        gr.Markdown("*提示:先拍一张没有主体的纯背景图,效果最佳*")
-
                     quality_select = gr.Radio(
                         choices=[("⚡ 快速", "fast"), ("✨ 标准", "standard"), ("🎨 高质量", "high")],
                         value=GUI_DEFAULTS["quality"],
@@ -709,55 +787,82 @@ def create_ui():
 
                 # Chroma Key 参数
                 with gr.Group(visible=True) as green_params:
-                    gr.Markdown("### 🟢 Chroma Key 参数")
+                    gr.Markdown("### 🟢 推荐核心参数")
 
-                    with gr.Accordion("屏幕颜色", open=True):
+                    with gr.Group():
+                        key_strength = gr.Slider(
+                            0.6, 1.4, value=GUI_DEFAULTS["key_strength"], step=0.05,
+                            label="Key Strength",
+                            info="抠像强度。过高容易抠透明，过低容易留绿"
+                        )
+                        transparency_preserve = gr.Slider(
+                            0.0, 1.0,
+                            value=GUI_DEFAULTS["transparency_preserve"],
+                            step=0.05,
+                            label="半透明保留",
+                            info="提高会保留爱心辉光/特效，过高可能保留背景雾边"
+                        )
+                        green_despill = gr.Slider(
+                            0.0, 1.0,
+                            value=GUI_DEFAULTS["green_despill"],
+                            step=0.05,
+                            label="去绿边强度"
+                        )
+                        edge_despill_factor = gr.Slider(
+                            0.5, 2.0,
+                            value=GUI_DEFAULTS["edge_despill_factor"],
+                            step=0.1,
+                            label="去绿系数"
+                        )
+
+                    with gr.Row():
+                        shrink_grow = gr.Slider(
+                            -5, 5, value=GUI_DEFAULTS["shrink_grow"], step=1,
+                            label="Shrink/Grow",
+                            info="负值收边，正值补边"
+                        )
+                        edge_blur = gr.Slider(
+                            0, 5, value=GUI_DEFAULTS["edge_blur"], step=1,
+                            label="Edge Blur",
+                            info="边缘柔化半径"
+                        )
+
+                    gvm_max_internal_size = gr.Radio(
+                        choices=[("512 快速", 512), ("768 推荐", 768), ("1024 高质量", 1024)],
+                        value=GUI_DEFAULTS["gvm_max_internal_size"],
+                        label="GVM 推理尺寸"
+                    )
+
+                    with gr.Accordion("高级绿幕参数", open=False):
                         screen_color = gr.Radio(
                             choices=[("🟢 绿色", "green"), ("🔵 蓝色", "blue"), ("🔍 自动检测", "auto")],
                             value=GUI_DEFAULTS["screen_color"],
                             label="屏幕颜色"
                         )
-
-                    with gr.Accordion("Key 强度", open=True):
-                        key_strength = gr.Slider(
-                            0.1, 10.0, value=GUI_DEFAULTS["key_strength"], step=0.1,
-                            label="Key Strength",
-                            info="抠像强度,越高越激进"
-                        )
-
-                    with gr.Accordion("Alpha 裁剪", open=True):
-                        clip_black = gr.Slider(
-                            0.0, 1.0, value=GUI_DEFAULTS["clip_black"], step=0.01,
-                            label="Clip Black",
-                            info="低于此值的 Alpha 置为 0"
-                        )
-                        clip_white = gr.Slider(
-                            0.0, 1.0, value=GUI_DEFAULTS["clip_white"], step=0.01,
-                            label="Clip White",
-                            info="高于此值的 Alpha 置为 1"
-                        )
-
-                    with gr.Accordion("边缘调整", open=False):
-                        shrink_grow = gr.Slider(
-                            -250, 250, value=GUI_DEFAULTS["shrink_grow"], step=1,
-                            label="Shrink/Grow",
-                            info="负值=收缩(腐蚀),正值=扩张(膨胀)"
-                        )
-                        edge_blur = gr.Slider(
-                            0, 50, value=GUI_DEFAULTS["edge_blur"], step=1,
-                            label="Edge Blur",
-                            info="边缘模糊半径(px)"
-                        )
-
-                    with gr.Accordion("传统参数(兼容)", open=False):
                         green_sim = gr.Slider(0.1, 1.0, value=GUI_DEFAULTS["green_similarity"], step=0.05, label="颜色相似度")
-                        green_despill = gr.Slider(0.0, 1.0, value=GUI_DEFAULTS["green_despill"], step=0.05, label="去绿边强度")
-                        green_hair = gr.Slider(0.0, 1.0, value=GUI_DEFAULTS["green_hair"], step=0.05, label="毛发保护")
+                        green_hair = gr.Slider(
+                            0.0, 1.0,
+                            value=GUI_DEFAULTS["green_hair"],
+                            step=0.05,
+                            label="毛发保护",
+                            visible=False,
+                        )
                         white_protect_thresh = gr.Slider(150, 255, value=GUI_DEFAULTS["white_protect_brightness"], step=5, label="白色保护亮度")
                         white_protect_sat = gr.Slider(10, 60, value=GUI_DEFAULTS["white_protect_saturation"], step=1, label="白色保护饱和度")
-                        edge_despill_factor = gr.Slider(0.5, 2.0, value=GUI_DEFAULTS["edge_despill_factor"], step=0.1, label="去绿系数")
-                        pure_color = gr.Checkbox(value=GUI_DEFAULTS["pure_color"], label="纯色模式(更激进去背景)")
-                        use_filter = gr.Checkbox(value=GUI_DEFAULTS["use_filter"], label="边缘柔化")
+                        with gr.Row():
+                            clip_black = gr.Slider(
+                                0.0, 1.0, value=GUI_DEFAULTS["clip_black"], step=0.01,
+                                label="Clip Black",
+                                info="危险参数：提高会吃掉辉光/耳朵边缘"
+                            )
+                            clip_white = gr.Slider(
+                                0.0, 1.0, value=GUI_DEFAULTS["clip_white"], step=0.01,
+                                label="Clip White",
+                                info="降低会拉实主体，也可能加重雾边"
+                            )
+
+                    pure_color = gr.Checkbox(value=GUI_FIXED_PARAMETER_DEFAULTS["pure_color"], visible=False)
+                    use_filter = gr.Checkbox(value=GUI_FIXED_PARAMETER_DEFAULTS["use_filter"], visible=False)
 
                 # 黑底参数
                 with gr.Group(visible=False) as black_params:
@@ -767,61 +872,53 @@ def create_ui():
                     black_glow = gr.Slider(0.0, 1.0, value=0.9, step=0.05, label="辉光保留")
                     black_particle = gr.Slider(0.0, 1.0, value=0.7, step=0.05, label="粒子增强")
 
-                # 通用参数
-                with gr.Group():
-                    gr.Markdown("### 🔧 通用参数")
-                    edge_soft = gr.Slider(0.0, 1.0, value=0.0, step=0.05, label="边缘柔化")
-                    temporal_str = gr.Slider(0.0, 1.0, value=0.5, step=0.05, label="时序稳定")
+                # 低频通用参数固定为推荐值，避免普通用户误调坏效果。
+                edge_soft = gr.Slider(0.0, 1.0, value=GUI_FIXED_PARAMETER_DEFAULTS["edge_softness"], visible=False)
+                temporal_str = gr.Slider(0.0, 1.0, value=GUI_FIXED_PARAMETER_DEFAULTS["temporal_strength"], visible=False)
 
                 # 推理控制
                 with gr.Group():
-                    gr.Markdown("### 🎛️ 推理控制")
+                    gr.Markdown("### 🎛️ 高级与输出")
 
-                    with gr.Accordion("边缘细化", open=False):
-                        edge_refinement = gr.Checkbox(value=True, label="启用边缘细化")
-                        edge_radius = gr.Slider(1, 10, value=3, step=1, label="细化半径")
-                        edge_threshold = gr.Slider(0.0, 1.0, value=0.5, step=0.05, label="边缘阈值")
-
-                    with gr.Accordion("去溢色", open=True):
-                        despill_enable = gr.Checkbox(value=GUI_DEFAULTS["despill_enable"], label="启用去溢色")
-                        despill_strength = gr.Slider(0.0, 1.0, value=GUI_DEFAULTS["despill_strength"], step=0.05, label="去溢色强度")
-                        despill_color = gr.Radio(
-                            choices=[("绿色", "green"), ("蓝色", "blue"), ("自动", "auto")],
-                            value=GUI_DEFAULTS["despill_color"],
-                            label="溢色颜色"
-                        )
+                    despill_enable = gr.Checkbox(value=GUI_FIXED_PARAMETER_DEFAULTS["despill_enable"], visible=False)
+                    despill_strength = gr.Slider(
+                        0.0, 1.0,
+                        value=GUI_DEFAULTS["despill_strength"],
+                        step=0.05,
+                        label="去溢色强度",
+                        visible=False
+                    )
+                    despill_color = gr.Radio(
+                        choices=[("绿色", "green"), ("蓝色", "blue"), ("自动", "auto")],
+                        value=GUI_FIXED_PARAMETER_DEFAULTS["despill_color"],
+                        visible=False
+                    )
 
                     with gr.Accordion("去噪点", open=False):
                         despeckle_enable = gr.Checkbox(value=GUI_DEFAULTS["despeckle_enable"], label="启用去噪点")
                         despeckle_radius = gr.Slider(1, 5, value=GUI_DEFAULTS["despeckle_radius"], step=1, label="去噪点半径")
-                        despeckle_threshold = gr.Slider(0.0, 1.0, value=GUI_DEFAULTS["despeckle_threshold"], step=0.05, label="去噪点阈值")
-
-                    with gr.Accordion("时序稳定", open=False):
-                        temporal_enable = gr.Checkbox(value=True, label="启用时序稳定")
-                        temporal_window = gr.Slider(1, 15, value=5, step=1, label="稳定窗口")
-                        temporal_threshold = gr.Slider(0.0, 1.0, value=0.3, step=0.05, label="稳定阈值")
-
-                    with gr.Accordion("色彩空间", open=False):
-                        color_space = gr.Radio(
-                            choices=[("sRGB", "sRGB"), ("Rec.709", "Rec709"), ("Linear", "Linear"), ("ACES", "ACES")],
-                            value="sRGB",
-                            label="工作色彩空间"
+                        despeckle_threshold = gr.Slider(
+                            0.0, 1.0,
+                            value=GUI_DEFAULTS["despeckle_threshold"],
+                            step=0.05,
+                            label="去噪点阈值",
+                            info="提高会删除低透明噪点，也可能削掉辉光/半透明细节"
                         )
+
+                    color_space = gr.Radio(
+                        choices=[("sRGB", "sRGB"), ("Rec.709", "Rec709"), ("Linear", "Linear"), ("ACES", "ACES")],
+                        value=GUI_FIXED_PARAMETER_DEFAULTS["color_space"],
+                        visible=False
+                    )
 
                     with gr.Accordion("输出设置", open=False):
-                        output_format = gr.Radio(
-                            choices=[("PNG", "png"), ("EXR", "exr"), ("TGA", "tga")],
-                            value="png",
-                            label="输出格式"
-                        )
                         with gr.Row():
                             output_fg = gr.Checkbox(value=GUI_DEFAULTS["output_fg"], label="FG (直接前景)")
                             output_matte = gr.Checkbox(value=GUI_DEFAULTS["output_matte"], label="Matte (Alpha)")
                         with gr.Row():
                             output_comp = gr.Checkbox(value=GUI_DEFAULTS["output_comp"], label="Comp (预乘)")
                             output_processed = gr.Checkbox(value=GUI_DEFAULTS["output_processed"], label="Processed (RGBA)")
-                        output_premultiply = gr.Checkbox(value=False, label="预乘 Alpha")
-                        output_invert = gr.Checkbox(value=False, label="反转 Alpha")
+                        generate_zip = gr.Checkbox(value=GUI_DEFAULTS["generate_zip"], label="打包 ZIP 下载")
 
                 # AI 增强参数
                 with gr.Group(visible=False) as ai_params:
@@ -833,7 +930,7 @@ def create_ui():
 
                 # 处理按钮
                 with gr.Row():
-                    preset_btn = gr.Button("✨ 应用推荐参数", variant="secondary")
+                    preset_btn = gr.Button("↩ 恢复推荐参数", variant="secondary")
                     process_btn = gr.Button("🚀 开始处理", variant="primary", size="lg")
 
                 # 状态栏
@@ -877,6 +974,10 @@ def create_ui():
                             label="PNG 序列帧 (ZIP)",
                             interactive=False
                         )
+                        transparent_png = gr.File(
+                            label="单帧透明 PNG",
+                            interactive=False
+                        )
 
                         frame_count = gr.Number(
                             label="处理帧数",
@@ -898,17 +999,6 @@ def create_ui():
         )
 
         # AI 参数显示/隐藏
-        # BGM2 背景上传显示/隐藏
-        def toggle_bgm2_group(choice):
-            return gr.update(visible=(choice == "bgm2"))
-
-        ai_select.change(
-            fn=toggle_bgm2_group,
-            inputs=[ai_select],
-            outputs=[bgm2_group]
-        )
-
-        # AI 参数显示/隐藏
         def toggle_ai_params(choice):
             return gr.update(visible=(choice == "enhance"))
 
@@ -916,6 +1006,12 @@ def create_ui():
             fn=toggle_ai_params,
             inputs=[ai_select],
             outputs=[ai_params]
+        )
+
+        video_input.change(
+            fn=_create_upload_preview,
+            inputs=[video_input],
+            outputs=[upload_image_preview, upload_video_preview, upload_status],
         )
 
         preset_outputs = [
@@ -942,6 +1038,9 @@ def create_ui():
             despeckle_enable,
             despeckle_radius,
             despeckle_threshold,
+            transparency_preserve,
+            gvm_max_internal_size,
+            generate_zip,
             output_fg,
             output_matte,
             output_comp,
@@ -979,6 +1078,8 @@ def create_ui():
                 black_particle,
                 edge_soft,
                 temporal_str,
+                transparency_preserve,
+                gvm_max_internal_size,
                 # Chroma Key 参数
                 screen_color,
                 key_strength,
@@ -986,18 +1087,9 @@ def create_ui():
                 clip_white,
                 shrink_grow,
                 edge_blur,
-                edge_refinement,
-                edge_radius,
-                edge_threshold,
                 despill_enable,
                 despill_strength,
                 despill_color,
-                temporal_enable,
-                temporal_window,
-                temporal_threshold,
-                output_format,
-                output_premultiply,
-                output_invert,
                 despeckle_enable,
                 despeckle_radius,
                 despeckle_threshold,
@@ -1006,11 +1098,11 @@ def create_ui():
                 output_matte,
                 output_comp,
                 output_processed,
+                generate_zip,
                 ai_gamma,
                 ai_threshold,
                 ai_gain,
                 ai_sharpen,
-                bgm2_bg_input,
             ],
             outputs=[
                 result_preview,
@@ -1018,7 +1110,8 @@ def create_ui():
                 status_text,
                 input_preview,
                 output_preview,
-                frame_count
+                frame_count,
+                transparent_png,
             ]
         )
 

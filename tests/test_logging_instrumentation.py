@@ -69,7 +69,15 @@ def test_hybrid_green_screen_logs_selected_ai_engine(caplog, monkeypatch):
     )
 
     caplog.set_level(logging.INFO, logger="matteflow.matte.hybrid_matte")
-    result = hybrid._green_screen_matte([np.zeros((2, 2, 3), dtype=np.uint8)], None)
+    frame = np.array(
+        [
+            [[248, 152, 205], [152, 138, 128]],
+            [[42, 132, 62], [240, 240, 245]],
+        ],
+        dtype=np.uint8,
+    )
+
+    result = hybrid._green_screen_matte([frame], None)
 
     assert np.allclose(result[0], 1.0)
     assert "Using GVM for green screen" in caplog.text
@@ -88,7 +96,7 @@ def test_hybrid_green_screen_preserves_base_transparency_effects(monkeypatch):
         dtype=np.float32,
     )
     base_alpha = np.array(
-        [[0.8, 0.2], [0.0, 0.9]],
+        [[0.8, 0.45], [0.14, 0.9]],
         dtype=np.float32,
     )
 
@@ -116,11 +124,79 @@ def test_hybrid_green_screen_preserves_base_transparency_effects(monkeypatch):
         lambda alphas, config: alphas,
     )
 
-    result = hybrid._green_screen_matte([np.zeros((2, 2, 3), dtype=np.uint8)], None)
+    frame = np.array(
+        [
+            [[248, 152, 205], [152, 138, 128]],
+            [[42, 132, 62], [240, 240, 245]],
+        ],
+        dtype=np.uint8,
+    )
 
-    assert result[0][0, 0] > 0.5
-    assert result[0][0, 1] > 0.0
+    result = hybrid._green_screen_matte([frame], None)
+
+    assert result[0][0, 0] > 0.3
+    assert result[0][0, 1] < 0.04
+    assert result[0][1, 0] == 0.0
     assert result[0][1, 1] >= 1.0
+
+
+def test_hybrid_green_screen_suppresses_screen_colored_effect_blob():
+    hybrid = hybrid_matte.HybridMatte.__new__(hybrid_matte.HybridMatte)
+    hybrid.config = MattingConfig()
+    hybrid.config.transparency_preserve = 0.7
+
+    base_alpha = np.array([[0.9, 0.9, 0.9, 0.0]], dtype=np.float32)
+    ai_alpha = np.zeros((1, 4), dtype=np.float32)
+    frame = np.array(
+        [[[248, 152, 205], [152, 138, 128], [42, 132, 62], [30, 128, 58]]],
+        dtype=np.uint8,
+    )
+
+    result = hybrid._merge_green_screen_effects([base_alpha], [ai_alpha], [frame])[0]
+
+    assert result[0, 0] > 0.4
+    assert result[0, 1] < 0.08
+    assert result[0, 2] < 0.02
+
+
+def test_hybrid_green_screen_keeps_solid_foreground_when_ai_misses_it():
+    hybrid = hybrid_matte.HybridMatte.__new__(hybrid_matte.HybridMatte)
+    hybrid.config = MattingConfig()
+    hybrid.config.transparency_preserve = 0.7
+
+    base_alpha = np.array([[1.0, 1.0, 1.0, 0.0]], dtype=np.float32)
+    ai_alpha = np.zeros((1, 4), dtype=np.float32)
+    frame = np.array(
+        [[[212, 218, 238], [246, 130, 190], [170, 145, 150], [30, 128, 58]]],
+        dtype=np.uint8,
+    )
+
+    result = hybrid._merge_green_screen_effects([base_alpha], [ai_alpha], [frame])[0]
+
+    assert result[0, 0] > 0.9
+    assert result[0, 1] > 0.9
+    assert result[0, 2] < 0.12
+    assert result[0, 3] == 0.0
+
+
+def test_hybrid_green_screen_keeps_soft_blue_ear_when_ai_misses_it():
+    hybrid = hybrid_matte.HybridMatte.__new__(hybrid_matte.HybridMatte)
+    hybrid.config = MattingConfig()
+    hybrid.config.transparency_preserve = 0.7
+
+    base_alpha = np.array([[0.35, 0.35, 0.35, 0.20]], dtype=np.float32)
+    ai_alpha = np.zeros((1, 4), dtype=np.float32)
+    frame = np.array(
+        [[[208, 214, 238], [185, 178, 205], [170, 145, 150], [34, 128, 58]]],
+        dtype=np.uint8,
+    )
+
+    result = hybrid._merge_green_screen_effects([base_alpha], [ai_alpha], [frame])[0]
+
+    assert result[0, 0] > 0.75
+    assert result[0, 1] > 0.75
+    assert result[0, 2] < 0.08
+    assert result[0, 3] == 0.0
 
 
 def test_gvm_generate_logs_when_model_is_unavailable(caplog):

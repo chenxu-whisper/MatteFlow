@@ -35,3 +35,54 @@ def test_create_preview_frames_prefers_processed_rgba_over_comp(tmp_path):
     assert output_preview is not None
     assert output_preview[0, 0, 2] > output_preview[0, 0, 0]
     assert output_preview[0, 0, 2] > output_preview[0, 0, 1]
+
+
+def test_create_upload_preview_returns_image_for_image_file(tmp_path):
+    image_path = tmp_path / "upload.png"
+    Image.fromarray(np.full((3, 4, 3), 128, dtype=np.uint8), mode="RGB").save(image_path)
+
+    image_preview, video_preview, status = web_gui._create_upload_preview(str(image_path))
+
+    assert image_preview["value"] == str(image_path)
+    assert image_preview["visible"] is True
+    assert video_preview["value"] is None
+    assert video_preview["visible"] is False
+    assert "图片" in status
+
+
+def test_create_upload_preview_skips_image_for_video_file(tmp_path):
+    video_path = tmp_path / "upload.mp4"
+    video_path.write_bytes(b"not a real video")
+
+    image_preview, video_preview, status = web_gui._create_upload_preview(str(video_path))
+
+    assert image_preview["value"] is None
+    assert image_preview["visible"] is False
+    assert video_preview["value"] == str(video_path)
+    assert video_preview["visible"] is True
+    assert "视频" in status
+
+
+def test_find_transparent_png_download_prefers_processed_rgba_first_frame(tmp_path):
+    output_dir = tmp_path / "out"
+    processed_dir = output_dir / "Processed"
+    matte_dir = output_dir / "Matte"
+    processed_dir.mkdir(parents=True)
+    matte_dir.mkdir(parents=True)
+
+    processed_path = processed_dir / "processed_000000.png"
+    matte_path = matte_dir / "matte_000000.png"
+    Image.fromarray(np.zeros((2, 2, 4), dtype=np.uint8), mode="RGBA").save(processed_path)
+    Image.fromarray(np.zeros((2, 2), dtype=np.uint8), mode="L").save(matte_path)
+
+    download_path = web_gui._find_transparent_png_download(output_dir)
+
+    assert download_path == processed_path
+
+
+def test_find_transparent_png_download_returns_none_without_processed_png(tmp_path):
+    output_dir = tmp_path / "out"
+    (output_dir / "Matte").mkdir(parents=True)
+    Image.fromarray(np.zeros((2, 2), dtype=np.uint8), mode="L").save(output_dir / "Matte" / "matte_000000.png")
+
+    assert web_gui._find_transparent_png_download(output_dir) is None
