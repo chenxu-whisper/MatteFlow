@@ -91,6 +91,7 @@ def _suggest_from_frame(
     params["green_despill_strength"] = float(np.clip(green_despill, 0.4, 0.9))
     params["edge_despill_factor"] = float(np.clip(edge_despill, 0.8, 1.6))
 
+    # Keep dangerous alpha clipping conservative for first-pass auto optimization.
     params["clip_black"] = 0.0
     params["clip_white"] = 1.0
 
