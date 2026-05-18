@@ -136,3 +136,41 @@ def test_gvm_wrapper_preserves_soft_alpha_values(monkeypatch, tmp_path) -> None:
     actual = written["alpha"][0, 0, :2, :2].numpy()
     expected = F.interpolate(soft_alpha, (4, 4), mode="bilinear")[0, 0, :2, :2].numpy()
     np.testing.assert_allclose(actual, expected, atol=1e-6)
+
+
+def test_gvm_preserve_internal_swirl_content_repairs_low_alpha_holes() -> None:
+    matte = GVMMatte.__new__(GVMMatte)
+    frame = np.full((9, 9, 3), [20, 200, 20], dtype=np.uint8)
+    frame[2:7, 2:7] = [170, 135, 240]
+    alpha = np.zeros((9, 9), dtype=np.float32)
+    alpha[2:7, 2:7] = 0.52
+    alpha[4, 4] = 0.08
+
+    repaired = matte._preserve_internal_swirl_content(frame, alpha)
+
+    assert repaired[4, 4] > alpha[4, 4]
+    assert repaired[4, 4] <= 0.55
+
+
+def test_gvm_preserve_internal_swirl_content_keeps_pure_green_background_flat() -> None:
+    matte = GVMMatte.__new__(GVMMatte)
+    frame = np.full((9, 9, 3), [20, 200, 20], dtype=np.uint8)
+    alpha = np.zeros((9, 9), dtype=np.float32)
+
+    repaired = matte._preserve_internal_swirl_content(frame, alpha)
+
+    assert np.allclose(repaired, alpha)
+
+
+def test_gvm_preserve_internal_swirl_content_can_recover_zero_alpha_hole_with_support() -> None:
+    matte = GVMMatte.__new__(GVMMatte)
+    frame = np.full((9, 9, 3), [20, 200, 20], dtype=np.uint8)
+    frame[1:8, 1:8] = [185, 155, 240]
+    alpha = np.zeros((9, 9), dtype=np.float32)
+    alpha[1:8, 1:8] = 0.52
+    alpha[4, 4] = 0.0
+
+    repaired = matte._preserve_internal_swirl_content(frame, alpha)
+
+    assert repaired[4, 4] > 0.2
+    assert repaired[4, 4] <= 0.55

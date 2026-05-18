@@ -19,6 +19,7 @@ class HybridMatte:
     
     def __init__(self, config: MattingConfig):
         self.config = config
+        self.last_active_ai_model = None
         self.rvm = None
         self.birefnet = None
         self.rmbg = None
@@ -247,6 +248,7 @@ class HybridMatte:
     
     def generate_sequence(self, frames: List[np.ndarray], bg_mode: BackgroundMode, progress_callback=None) -> List[np.ndarray]:
         """序列抠图"""
+        self.last_active_ai_model = None
         if bg_mode == BackgroundMode.GREEN_SCREEN:
             return self._green_screen_matte(frames, progress_callback)
         elif bg_mode == BackgroundMode.BLACK_BACKGROUND:
@@ -283,26 +285,33 @@ class HybridMatte:
             # 优先使用 GVM (Generative Video Matting)
             if self.gvm is not None and self.gvm.model is not None:
                 ai_engine = self.gvm
+                self.last_active_ai_model = "gvm"
                 logger.info("Applying GVM edge refinement")
             # 其次使用 MatAnyone2 (人物视频抠图)
             elif self.matanyone2 is not None and self.matanyone2.model is not None:
                 ai_engine = self.matanyone2
+                self.last_active_ai_model = "matanyone2"
                 logger.info("Applying MatAnyone2 edge refinement")
             # 然后使用 CorridorKey
             elif self.corridorkey is not None and self.corridorkey.model is not None:
                 ai_engine = self.corridorkey
+                self.last_active_ai_model = "corridorkey"
                 logger.info("Applying CorridorKey edge refinement")
             elif self.rembg is not None and self.rembg._available:
                 ai_engine = self.rembg
+                self.last_active_ai_model = "rembg"
                 logger.info("Applying rembg edge refinement")
             elif self.rmbg is not None and self.rmbg.model is not None:
                 ai_engine = self.rmbg
+                self.last_active_ai_model = "rmbg"
                 logger.info("Applying RMBG-2 edge refinement")
             elif self.birefnet is not None and self.birefnet.model is not None:
                 ai_engine = self.birefnet
+                self.last_active_ai_model = "birefnet"
                 logger.info("Applying BiRefNet edge refinement")
             elif self.rvm is not None and self.rvm.model is not None:
                 ai_engine = self.rvm
+                self.last_active_ai_model = "rvm"
                 logger.info("Applying RVM edge refinement")
             
             if ai_engine is not None:
@@ -343,37 +352,52 @@ class HybridMatte:
             
             # 根据用户选择使用特定模型
             if ai_model == "gvm" and self.gvm is not None and self.gvm.model is not None:
+                self.last_active_ai_model = "gvm"
                 logger.info("Using GVM for green screen")
                 ai_alphas = self.gvm.generate_sequence(frames)
             elif ai_model == "matanyone2" and self.matanyone2 is not None and self.matanyone2.model is not None:
+                self.last_active_ai_model = "matanyone2"
                 logger.info("Using MatAnyone2 for green screen")
                 ai_alphas = self.matanyone2.generate_sequence(frames)
             elif ai_model == "corridorkey" and self.corridorkey is not None and self.corridorkey.model is not None:
+                self.last_active_ai_model = "corridorkey"
                 logger.info("Using CorridorKey for green screen")
                 ai_alphas = self.corridorkey.generate_sequence(frames, progress_callback)
             elif ai_model == "sam2" and self.sam2 is not None and (self.sam2.predictor is not None or self.sam2.model is not None):
+                self.last_active_ai_model = "sam2"
                 logger.info("Using SAM2 for green screen")
                 ai_alphas = self.sam2.generate_sequence(frames, progress_callback)
             elif ai_model == "rembg" and self.rembg is not None and self.rembg._available:
+                self.last_active_ai_model = "rembg"
                 logger.info("Using rembg for green screen")
                 ai_alphas = self.rembg.generate_sequence(frames, progress_callback)
             elif ai_model == "birefnet" and self.birefnet is not None and self.birefnet.model is not None:
+                self.last_active_ai_model = "birefnet"
                 logger.info("Using BiRefNet for green screen")
                 ai_alphas = self.birefnet.generate_sequence(frames, progress_callback)
             elif ai_model == "rvm" and self.rvm is not None and self.rvm.model is not None:
+                self.last_active_ai_model = "rvm"
                 logger.info("Using RVM for green screen")
                 ai_alphas = self.rvm.generate_sequence(frames, progress_callback)
             # auto 模式：按优先级自动选择
+            elif self.gvm is not None and self.gvm.model is not None:
+                self.last_active_ai_model = "gvm"
+                logger.info("Using GVM for green screen (auto)")
+                ai_alphas = self.gvm.generate_sequence(frames)
             elif self.corridorkey is not None and self.corridorkey.model is not None:
+                self.last_active_ai_model = "corridorkey"
                 logger.info("Using CorridorKey for green screen (auto)")
                 ai_alphas = self.corridorkey.generate_sequence(frames, progress_callback)
             elif self.rembg is not None and self.rembg._available:
+                self.last_active_ai_model = "rembg"
                 logger.info("Using rembg for green screen (auto)")
                 ai_alphas = self.rembg.generate_sequence(frames, progress_callback)
             elif self.birefnet is not None and self.birefnet.model is not None:
+                self.last_active_ai_model = "birefnet"
                 logger.info("Using BiRefNet for green screen (auto)")
                 ai_alphas = self.birefnet.generate_sequence(frames, progress_callback)
             elif self.rvm is not None and self.rvm.model is not None:
+                self.last_active_ai_model = "rvm"
                 logger.info("Using RVM for green screen (auto)")
                 ai_alphas = self.rvm.generate_sequence(frames, progress_callback)
         
@@ -399,26 +423,83 @@ class HybridMatte:
         merged: List[np.ndarray] = []
         frame_iter = frames if frames is not None else [None] * len(base_alphas)
         for base_alpha, ai_alpha, frame in zip(base_alphas, ai_alphas, frame_iter):
-            base_alpha = base_alpha.astype(np.float32, copy=False)
-            ai_alpha = ai_alpha.astype(np.float32, copy=False)
-            background_floor = float(np.percentile(base_alpha, 10))
-            effect_floor = max(0.28, background_floor + 0.04)
-            effect_alpha = np.clip((base_alpha - effect_floor) / (1.0 - effect_floor), 0.0, 1.0)
-            effect_alpha = np.power(effect_alpha, 2.0)
-            if frame is not None:
-                effect_alpha = effect_alpha * self._green_screen_effect_color_weight(frame)
-            effect_alpha = effect_alpha * preserve
-            if frame is not None:
-                solid_color_mask = self._green_screen_solid_foreground_mask(frame)
-                soft_subject_mask = self._green_screen_soft_subject_mask(frame)
-                solid_mask = ((base_alpha >= 0.94) & solid_color_mask) | (
-                    (base_alpha >= 0.30) & soft_subject_mask
-                )
-                solid_foreground = np.where(solid_mask, 1.0, 0.0)
-            else:
-                solid_foreground = np.where(base_alpha >= 0.94, base_alpha, 0.0)
-            merged.append(np.maximum.reduce([ai_alpha, effect_alpha, solid_foreground]))
+            base_alpha = np.clip(base_alpha.astype(np.float32, copy=False), 0.0, 1.0)
+            ai_alpha = np.clip(ai_alpha.astype(np.float32, copy=False), 0.0, 1.0)
+            solid_alpha = np.maximum(
+                self._green_screen_ai_solid_layer(ai_alpha, base_alpha, frame),
+                self._green_screen_solid_layer(base_alpha, frame),
+            )
+            effect_alpha = self._green_screen_effect_layer(base_alpha, frame) * preserve
+            fused_alpha = self._soft_fuse_layers(solid_alpha, effect_alpha)
+            self._log_transparency_fusion_stats("green_screen", solid_alpha, effect_alpha, fused_alpha)
+            merged.append(fused_alpha)
         return merged
+
+    def _smoothstep(self, x: np.ndarray, low: float, high: float) -> np.ndarray:
+        t = np.clip((x - low) / max(high - low, 1e-6), 0.0, 1.0)
+        return t * t * (3.0 - 2.0 * t)
+
+    def _soft_fuse_layers(self, solid_alpha: np.ndarray, effect_alpha: np.ndarray) -> np.ndarray:
+        solid = np.clip(solid_alpha.astype(np.float32, copy=False), 0.0, 1.0)
+        effect = np.clip(effect_alpha.astype(np.float32, copy=False), 0.0, 1.0)
+        return np.clip(solid + effect * (1.0 - solid), 0.0, 1.0)
+
+    def _log_transparency_fusion_stats(
+        self,
+        mode: str,
+        solid_alpha: np.ndarray,
+        effect_alpha: np.ndarray,
+        fused_alpha: np.ndarray,
+    ) -> None:
+        logger.info(
+            "Transparency fusion stats: mode=%s solid_mean=%.4f effect_mean=%.4f fused_mean=%.4f",
+            mode,
+            float(solid_alpha.mean()),
+            float(effect_alpha.mean()),
+            float(fused_alpha.mean()),
+        )
+
+    def _green_screen_effect_layer(self, base_alpha: np.ndarray, frame: np.ndarray | None) -> np.ndarray:
+        background_floor = float(np.percentile(base_alpha, 10))
+        effect_floor = min(background_floor + 0.02, 0.95)
+        normalized = np.clip((base_alpha - effect_floor) / max(1.0 - effect_floor, 1e-6), 0.0, 1.0)
+        effect_alpha = self._smoothstep(normalized, 0.08, 0.75)
+        if frame is not None:
+            effect_alpha = effect_alpha * self._green_screen_effect_haze_suppression(frame)
+            effect_alpha = effect_alpha * self._green_screen_effect_color_weight(frame)
+            effect_alpha = np.maximum(effect_alpha, self._green_screen_white_ring_boost(base_alpha, frame))
+        return np.clip(effect_alpha, 0.0, 1.0)
+
+    def _green_screen_solid_layer(self, base_alpha: np.ndarray, frame: np.ndarray | None) -> np.ndarray:
+        if frame is None:
+            return np.where(base_alpha >= 0.92, base_alpha, 0.0)
+
+        solid_color_mask = self._green_screen_solid_foreground_mask(frame)
+        soft_subject_mask = self._green_screen_soft_subject_mask(frame)
+        solid_mask = ((base_alpha >= 0.92) & solid_color_mask) | ((base_alpha >= 0.28) & soft_subject_mask)
+        return np.where(solid_mask, 1.0, 0.0)
+
+    def _green_screen_ai_solid_layer(
+        self,
+        ai_alpha: np.ndarray,
+        base_alpha: np.ndarray,
+        frame: np.ndarray | None,
+    ) -> np.ndarray:
+        if frame is None:
+            return np.where((ai_alpha >= 0.98) & (base_alpha >= 0.75), ai_alpha, 0.0)
+
+        solid_color_mask = self._green_screen_solid_foreground_mask(frame)
+        soft_subject_mask = self._green_screen_soft_subject_mask(frame)
+        effect_like = self._green_screen_effect_color_weight(frame) > 0.45
+        ai_solid_mask = (
+            (ai_alpha >= 0.98)
+            & (
+                (base_alpha >= 0.75)
+                | soft_subject_mask
+                | (solid_color_mask & (~effect_like) & (base_alpha >= 0.55))
+            )
+        )
+        return np.where(ai_solid_mask, ai_alpha, 0.0)
 
     def _green_screen_effect_color_weight(self, frame: np.ndarray) -> np.ndarray:
         """Keep pink/white glow while suppressing green-screen colored haze blobs."""
@@ -432,7 +513,56 @@ class HybridMatte:
         white_glow_score = np.clip((brightness - 185.0) / 50.0, 0.0, 1.0)
         white_glow_score *= np.clip((90.0 - chroma) / 90.0, 0.0, 1.0)
 
+        green_haze_score = np.minimum.reduce(
+            [
+                np.clip((g - b - 10.0) / 18.0, 0.0, 1.0),
+                np.clip((g - r + 2.0) / 14.0, 0.0, 1.0),
+                np.clip((brightness - 165.0) / 40.0, 0.0, 1.0),
+                np.clip((85.0 - chroma) / 85.0, 0.0, 1.0),
+            ]
+        )
+        white_glow_score *= 1.0 - 0.85 * green_haze_score
+
         return np.maximum(pink_score, white_glow_score)
+
+    def _green_screen_effect_haze_suppression(self, frame: np.ndarray) -> np.ndarray:
+        """Attenuate bright low-chroma green haze before effect alpha is fused."""
+        frame_f = frame.astype(np.float32, copy=False)
+        r, g, b = frame_f[:, :, 0], frame_f[:, :, 1], frame_f[:, :, 2]
+        brightness = (r + g + b) / 3.0
+        chroma = np.maximum.reduce([r, g, b]) - np.minimum.reduce([r, g, b])
+
+        green_haze = np.minimum.reduce(
+            [
+                np.clip((g - b - 8.0) / 18.0, 0.0, 1.0),
+                np.clip((g - r + 4.0) / 18.0, 0.0, 1.0),
+                np.clip((brightness - 150.0) / 55.0, 0.0, 1.0),
+                np.clip((95.0 - chroma) / 95.0, 0.0, 1.0),
+            ]
+        )
+        bright_haze_bias = np.maximum(
+            np.clip((brightness - 175.0) / 55.0, 0.0, 1.0),
+            np.clip((210.0 - chroma) / 210.0, 0.0, 1.0),
+        )
+        suppression = 1.0 - green_haze * (0.55 + 0.20 * bright_haze_bias)
+        return np.clip(suppression, 0.2, 1.0)
+
+    def _green_screen_white_ring_boost(self, base_alpha: np.ndarray, frame: np.ndarray) -> np.ndarray:
+        """Restore bright white rings whose mixed green edge gets under-weighted."""
+        frame_f = frame.astype(np.float32, copy=False)
+        r, g, b = frame_f[:, :, 0], frame_f[:, :, 1], frame_f[:, :, 2]
+        brightness = (r + g + b) / 3.0
+        chroma = np.maximum.reduce([r, g, b]) - np.minimum.reduce([r, g, b])
+        screen_mix = np.clip((g - np.maximum(r, b)) / 55.0, 0.0, 1.0)
+        ring_mix = np.minimum.reduce(
+            [
+                np.clip((brightness - 175.0) / 45.0, 0.0, 1.0),
+                np.clip((110.0 - chroma) / 110.0, 0.0, 1.0),
+                screen_mix,
+                np.clip(base_alpha / 0.28, 0.0, 1.0),
+            ]
+        )
+        return 0.35 * ring_mix
 
     def _green_screen_solid_foreground_mask(self, frame: np.ndarray) -> np.ndarray:
         """Reject green-screen colored false positives while keeping solid subjects/effects."""
@@ -452,7 +582,15 @@ class HybridMatte:
         brightness = (r + g + b) / 3.0
         chroma = np.maximum.reduce([r, g, b]) - np.minimum.reduce([r, g, b])
         screen_green = (g > r + 30.0) & (g > b + 20.0) & (g > 90.0)
-        return (~screen_green) & (brightness > 165.0) & (chroma < 75.0)
+        neutral_soft = (np.abs(r - g) < 45.0) & (np.abs(b - g) < 45.0)
+        soft_bright = (brightness > 165.0) & (chroma < 75.0)
+        soft_midtone = (
+            (brightness > 150.0)
+            & (brightness < 190.0)
+            & (chroma < 45.0)
+            & (b >= r - 5.0)
+        )
+        return (~screen_green) & neutral_soft & (soft_bright | soft_midtone)
     
     def _black_background_matte(self, frames: List[np.ndarray], progress_callback) -> List[np.ndarray]:
         """
@@ -476,31 +614,37 @@ class HybridMatte:
         # 2. 如果有 RVM，用 AI 做边缘细化
         if self.rvm is not None and self.rvm.model is not None:
             logger.info("Applying RVM edge refinement for black background")
-            
-            # 取关键帧用 RVM 细化边缘
-            refined_alphas = []
-            for i, (frame, base_alpha) in enumerate(zip(frames, base_alphas)):
-                # 只在边缘区域用 AI 辅助
-                edge_mask = (base_alpha > 0.05) & (base_alpha < 0.95)
-                
-                if np.any(edge_mask):
-                    # 用 RVM 生成边缘 alpha
-                    rvm_alpha = self.rvm.generate(frame)
-                    
-                    # 融合：核心区域用传统，边缘用 AI
-                    core_mask = base_alpha > 0.8
-                    bg_mask = base_alpha < 0.05
-                    
-                    # 核心：传统算法（保留粒子/辉光）
-                    # 边缘：AI 细化
-                    # 背景：透明
-                    result = base_alpha.copy()
-                    result[edge_mask] = rvm_alpha[edge_mask] * 0.7 + base_alpha[edge_mask] * 0.3
-                    
-                    refined_alphas.append(np.clip(result, 0, 1))
-                else:
-                    refined_alphas.append(base_alpha)
-            
-            return refined_alphas
+            ai_alphas = [self.rvm.generate(frame) for frame in frames]
+            return self._merge_black_background_effects(base_alphas, ai_alphas, frames)
         
         return base_alphas
+
+    def _merge_black_background_effects(
+        self,
+        base_alphas: List[np.ndarray],
+        ai_alphas: List[np.ndarray],
+        frames: List[np.ndarray] | None = None,
+    ) -> List[np.ndarray]:
+        merged: List[np.ndarray] = []
+        frame_iter = frames if frames is not None else [None] * len(base_alphas)
+        for base_alpha, ai_alpha, frame in zip(base_alphas, ai_alphas, frame_iter):
+            base_alpha = np.clip(base_alpha.astype(np.float32, copy=False), 0.0, 1.0)
+            ai_alpha = np.clip(ai_alpha.astype(np.float32, copy=False), 0.0, 1.0)
+            solid_alpha = np.maximum(ai_alpha, np.where(base_alpha > 0.75, base_alpha, 0.0))
+            effect_alpha = self._black_background_effect_layer(base_alpha, frame)
+            fused_alpha = self._soft_fuse_layers(solid_alpha, effect_alpha)
+            self._log_transparency_fusion_stats("black_background", solid_alpha, effect_alpha, fused_alpha)
+            merged.append(fused_alpha)
+        return merged
+
+    def _black_background_effect_layer(self, base_alpha: np.ndarray, frame: np.ndarray | None) -> np.ndarray:
+        effect_alpha = self._smoothstep(base_alpha, 0.03, 0.45)
+        if frame is None:
+            return np.clip(effect_alpha, 0.0, 1.0)
+
+        frame_f = frame.astype(np.float32, copy=False)
+        brightness = frame_f.mean(axis=2)
+        chroma = frame_f.max(axis=2) - frame_f.min(axis=2)
+        glow_weight = self._smoothstep(brightness / 255.0, 0.18, 0.95)
+        particle_weight = self._smoothstep(chroma / 255.0, 0.05, 0.55)
+        return np.clip(effect_alpha * np.maximum(glow_weight, particle_weight), 0.0, 1.0)

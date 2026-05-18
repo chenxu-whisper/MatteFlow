@@ -40,6 +40,34 @@ class MattingPipeline:
         self._frames = []
         self._alphas = []
         self._processed = []
+
+    def _log_alpha_stage_delta(self, stage: str, before, after) -> None:
+        """Log how much a stage changed alpha so regressions are easy to localize."""
+        if len(before) != len(after) or not before:
+            return
+
+        mean_abs_diffs = []
+        changed_pixels = 0
+        lifted_from_zero = 0
+        suppressed_to_near_zero = 0
+
+        for prev_alpha, next_alpha in zip(before, after):
+            prev_f = np.clip(prev_alpha.astype(np.float32, copy=False), 0.0, 1.0)
+            next_f = np.clip(next_alpha.astype(np.float32, copy=False), 0.0, 1.0)
+            diff = np.abs(next_f - prev_f)
+            mean_abs_diffs.append(float(diff.mean()))
+            changed_pixels += int((diff > 1e-4).sum())
+            lifted_from_zero += int(((prev_f <= 0.03) & (next_f > 0.03)).sum())
+            suppressed_to_near_zero += int(((prev_f > 0.03) & (next_f <= 0.03)).sum())
+
+        logger.info(
+            "Alpha stage delta: stage=%s mean_abs_diff=%.6f changed_pixels=%s lifted_from_zero=%s suppressed_to_near_zero=%s",
+            stage,
+            float(np.mean(mean_abs_diffs)),
+            changed_pixels,
+            lifted_from_zero,
+            suppressed_to_near_zero,
+        )
     
     def process(
         self,
@@ -113,7 +141,9 @@ class MattingPipeline:
         if self.config.quality_mode in (QualityMode.STANDARD, QualityMode.HIGH):
             self._notify(progress_callback, 50, 100, "refining")
             stage_start = time.time()
+            alphas_before_refine = [alpha.copy() for alpha in alphas]
             alphas = self.refiner.refine(frames, alphas)
+            self._log_alpha_stage_delta("refine", alphas_before_refine, alphas)
             timings["refine"] = time.time() - stage_start
         else:
             logger.info("Skipping refine stage for quality mode: %s", self.config.quality_mode.value)
@@ -123,7 +153,12 @@ class MattingPipeline:
         if self.config.quality_mode in (QualityMode.STANDARD, QualityMode.HIGH):
             self._notify(progress_callback, 55, 100, "despeckling")
             stage_start = time.time()
-            alphas = self.despeckle.process(alphas)
+            alphas_before_despeckle = [alpha.copy() for alpha in alphas]
+            despeckle_context = {
+                "active_ai_model": getattr(getattr(self, "hybrid_matte", None), "last_active_ai_model", None),
+            }
+            alphas = self.despeckle.process(alphas, frames=frames, context=despeckle_context)
+            self._log_alpha_stage_delta("despeckle", alphas_before_despeckle, alphas)
             timings["despeckle"] = time.time() - stage_start
         else:
             logger.info("Skipping despeckle stage for quality mode: %s", self.config.quality_mode.value)

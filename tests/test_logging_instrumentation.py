@@ -22,7 +22,11 @@ def test_pipeline_process_logs_stage_summary(tmp_path, caplog):
     )
     pipeline.analyzer = type("Analyzer", (), {"analyze": lambda self, frames: pipeline.config.background_mode})()
     pipeline.refiner = type("Refiner", (), {"refine": lambda self, frames, alphas: alphas})()
-    pipeline.despeckle = type("Despeckle", (), {"process": lambda self, alphas: alphas})()
+    pipeline.despeckle = type(
+        "Despeckle",
+        (),
+        {"process": lambda self, alphas, frames=None, context=None: alphas},
+    )()
     pipeline.stabilizer = type("Stabilizer", (), {"stabilize": lambda self, alphas: alphas})()
     pipeline.decontaminate = type("Decontaminate", (), {"process": lambda self, frames, alphas, bg_mode: frames})()
     pipeline._generate_matte = lambda frames, bg_mode, progress_callback: [
@@ -36,6 +40,77 @@ def test_pipeline_process_logs_stage_summary(tmp_path, caplog):
     assert "Loaded 1 frames" in caplog.text
     assert "Stage timings summary" in caplog.text
     assert "Process completed" in caplog.text
+
+
+def test_pipeline_process_logs_alpha_deltas_after_refine_and_despeckle(tmp_path, caplog):
+    pipeline = MattingPipeline.__new__(MattingPipeline)
+    pipeline.config = MattingConfig()
+    pipeline._notify = lambda callback, current, total, stage: None
+    pipeline._decode_input = lambda input_path: (
+        [np.zeros((4, 4, 3), dtype=np.uint8)],
+        {"width": 4, "height": 4},
+    )
+    pipeline.analyzer = type("Analyzer", (), {"analyze": lambda self, frames: pipeline.config.background_mode})()
+    pipeline.refiner = type(
+        "Refiner",
+        (),
+        {"refine": lambda self, frames, alphas: [np.clip(alphas[0] + 0.15, 0.0, 1.0)]},
+    )()
+    pipeline.despeckle = type(
+        "Despeckle",
+        (),
+        {
+            "process": lambda self, alphas, frames=None, context=None: [
+                np.clip(alphas[0] - 0.10, 0.0, 1.0)
+            ]
+        },
+    )()
+    pipeline.stabilizer = type("Stabilizer", (), {"stabilize": lambda self, alphas: alphas})()
+    pipeline.decontaminate = type("Decontaminate", (), {"process": lambda self, frames, alphas, bg_mode: frames})()
+    pipeline._generate_matte = lambda frames, bg_mode, progress_callback: [
+        np.full((4, 4), 0.20, dtype=np.float32)
+    ]
+    pipeline._encode_output = lambda frames, alphas, output_dir, meta: None
+
+    caplog.set_level(logging.INFO, logger="matteflow.pipeline")
+    pipeline.process(tmp_path / "input.mp4", tmp_path / "out")
+
+    assert "Alpha stage delta: stage=refine" in caplog.text
+    assert "Alpha stage delta: stage=despeckle" in caplog.text
+
+
+def test_pipeline_passes_active_ai_model_context_to_despeckle(tmp_path):
+    pipeline = MattingPipeline.__new__(MattingPipeline)
+    pipeline.config = MattingConfig()
+    pipeline._notify = lambda callback, current, total, stage: None
+    pipeline._decode_input = lambda input_path: (
+        [np.zeros((4, 4, 3), dtype=np.uint8)],
+        {"width": 4, "height": 4},
+    )
+    pipeline.analyzer = type("Analyzer", (), {"analyze": lambda self, frames: pipeline.config.background_mode})()
+    pipeline.refiner = type("Refiner", (), {"refine": lambda self, frames, alphas: alphas})()
+
+    captured = {}
+
+    class FakeDespeckle:
+        def process(self, alphas, frames=None, context=None):
+            captured["frame_shape"] = frames[0].shape
+            captured["active_ai_model"] = context["active_ai_model"]
+            return alphas
+
+    pipeline.despeckle = FakeDespeckle()
+    pipeline.stabilizer = type("Stabilizer", (), {"stabilize": lambda self, alphas: alphas})()
+    pipeline.decontaminate = type("Decontaminate", (), {"process": lambda self, frames, alphas, bg_mode: frames})()
+    pipeline.hybrid_matte = type("HybridMatte", (), {"last_active_ai_model": "gvm"})()
+    pipeline._generate_matte = lambda frames, bg_mode, progress_callback: [
+        np.full((4, 4), 0.20, dtype=np.float32)
+    ]
+    pipeline._encode_output = lambda frames, alphas, output_dir, meta: None
+
+    pipeline.process(tmp_path / "input.mp4", tmp_path / "out")
+
+    assert captured["frame_shape"] == (4, 4, 3)
+    assert captured["active_ai_model"] == "gvm"
 
 
 def test_hybrid_green_screen_logs_selected_ai_engine(caplog, monkeypatch):
@@ -79,8 +154,55 @@ def test_hybrid_green_screen_logs_selected_ai_engine(caplog, monkeypatch):
 
     result = hybrid._green_screen_matte([frame], None)
 
-    assert np.allclose(result[0], 1.0)
+    assert result[0][1, 1] >= 1.0
+    assert result[0][0, 0] < 0.95
     assert "Using GVM for green screen" in caplog.text
+
+
+def test_hybrid_green_screen_auto_uses_gvm_when_loaded(caplog, monkeypatch):
+    hybrid = hybrid_matte.HybridMatte.__new__(hybrid_matte.HybridMatte)
+    hybrid.config = MattingConfig()
+    hybrid.config.use_ai = True
+    hybrid.config.ai_enhance = False
+    hybrid.config.ai_model = "auto"
+    hybrid.last_active_ai_model = None
+    hybrid.gvm = type(
+        "FakeGVM",
+        (),
+        {"model": object(), "generate_sequence": lambda self, frames: [np.ones((2, 2), dtype=np.float32)]},
+    )()
+    hybrid.matanyone2 = None
+    hybrid.corridorkey = None
+    hybrid.rembg = None
+    hybrid.rmbg = None
+    hybrid.birefnet = None
+    hybrid.rvm = None
+    hybrid.sam2 = None
+    hybrid.green_matte = type(
+        "FakeGreenMatte",
+        (),
+        {"generate": lambda self, frame: np.zeros((2, 2), dtype=np.float32)},
+    )()
+
+    monkeypatch.setattr(
+        chroma_key_postprocess,
+        "apply_chroma_key_postprocess",
+        lambda alphas, config: alphas,
+    )
+
+    caplog.set_level(logging.INFO, logger="matteflow.matte.hybrid_matte")
+    frame = np.array(
+        [
+            [[248, 152, 205], [152, 138, 128]],
+            [[42, 132, 62], [240, 240, 245]],
+        ],
+        dtype=np.uint8,
+    )
+
+    hybrid._green_screen_matte([frame], None)
+
+    assert hybrid.last_active_ai_model == "gvm"
+    assert "Using GVM for green screen (auto)" in caplog.text
 
 
 def test_hybrid_green_screen_preserves_base_transparency_effects(monkeypatch):
@@ -197,6 +319,27 @@ def test_hybrid_green_screen_keeps_soft_blue_ear_when_ai_misses_it():
     assert result[0, 1] > 0.75
     assert result[0, 2] < 0.08
     assert result[0, 3] == 0.0
+
+
+def test_hybrid_green_screen_logs_transparency_fusion_stats(caplog):
+    hybrid = hybrid_matte.HybridMatte.__new__(hybrid_matte.HybridMatte)
+    hybrid.config = MattingConfig()
+    hybrid.config.transparency_preserve = 0.7
+
+    base_alpha = np.array([[0.0, 0.35, 0.85]], dtype=np.float32)
+    ai_alpha = np.array([[0.0, 0.10, 0.80]], dtype=np.float32)
+    frame = np.array(
+        [[[30, 128, 58], [246, 150, 205], [212, 218, 238]]],
+        dtype=np.uint8,
+    )
+
+    caplog.set_level(logging.INFO, logger="matteflow.matte.hybrid_matte")
+    hybrid._merge_green_screen_effects([base_alpha], [ai_alpha], [frame])
+
+    assert "Transparency fusion stats" in caplog.text
+    assert "solid_mean=" in caplog.text
+    assert "effect_mean=" in caplog.text
+    assert "fused_mean=" in caplog.text
 
 
 def test_gvm_generate_logs_when_model_is_unavailable(caplog):

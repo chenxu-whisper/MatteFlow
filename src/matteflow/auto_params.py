@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image
 
 from .config import MattingConfig
-from .input.formats import IMAGE_EXTENSIONS, detect_input_kind, is_image_file, InputKind
+from .input.formats import IMAGE_EXTENSIONS, InputKind, detect_input_kind, is_image_file
 
 
 @dataclass(frozen=True)
@@ -55,7 +55,6 @@ def _suggest_from_frame(
     sample: str,
 ) -> AutoParamSuggestion:
     """Suggest parameters from an RGB frame and include sampling context."""
-
     metrics = _analyze_frame(frame)
     params: dict[str, float | int | str] = {}
 

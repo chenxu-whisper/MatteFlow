@@ -50,22 +50,32 @@ class ModelChecker:
         )
         model_exists = model_dir is not None
         cuda_available = False
+        runtime_available = False
         try:
             torch = importlib.import_module("torch")
             cuda_available = bool(torch.cuda.is_available())
         except Exception:
             cuda_available = False
 
+        if model_exists and cuda_available:
+            try:
+                importlib.import_module("matteflow.vendor.gvm_core.wrapper")
+                runtime_available = True
+            except Exception:
+                runtime_available = False
+
         if not model_exists:
             reason = "模型仓库不存在或需要授权"
         elif not cuda_available:
             reason = "GVM 仅支持 CUDA GPU"
+        elif not runtime_available:
+            reason = "GVM vendored runtime 不可导入"
         else:
             reason = None
 
         return {
             "name": "GVM (Generative Video Matting)",
-            "available": model_exists and cuda_available,
+            "available": model_exists and cuda_available and runtime_available,
             "path": str(model_dir or (self.cache_dir / "models--geyongtao--gvm")),
             "size": "~6 GB",
             "auto_download": False,

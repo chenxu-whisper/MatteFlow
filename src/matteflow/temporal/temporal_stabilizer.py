@@ -31,6 +31,11 @@ class TemporalStabilizer:
             return self._adaptive_smooth(alphas)
         else:  # HIGH
             return self._optical_flow_smooth(alphas)
+
+    def _transparency_mask(self, alpha: np.ndarray) -> np.ndarray:
+        low = float(getattr(self.config, "transparency_temporal_low", 0.03))
+        high = float(getattr(self.config, "transparency_temporal_high", 0.75))
+        return (alpha > low) & (alpha < high)
     
     def _ema_smooth(self, alphas: List[np.ndarray]) -> List[np.ndarray]:
         """快速 EMA 平滑"""
@@ -47,6 +52,7 @@ class TemporalStabilizer:
     def _adaptive_smooth(self, alphas: List[np.ndarray]) -> List[np.ndarray]:
         """标准自适应平滑 - 增强版"""
         strength = self.config.temporal_strength
+        transparency_blend = float(getattr(self.config, "transparency_temporal_blend", 0.20))
         
         # 第一次：前向平滑
         forward = []
@@ -71,6 +77,9 @@ class TemporalStabilizer:
             
             # 应用平滑
             result = (1 - adaptive_weight) * alpha + adaptive_weight * prev
+            transparency_mask = self._transparency_mask(alpha)
+            transparency_result = alpha * (1.0 - transparency_blend) + prev * transparency_blend
+            result = np.where(transparency_mask, transparency_result, result)
             forward.append(np.clip(result, 0, 1))
         
         # 第二次：后向平滑（双向）
@@ -86,6 +95,9 @@ class TemporalStabilizer:
             adaptive_weight = np.where(core_mask, adaptive_weight * 0.1, adaptive_weight)
             
             result = (1 - adaptive_weight) * curr + adaptive_weight * next_frame
+            transparency_mask = self._transparency_mask(curr)
+            transparency_result = curr * (1.0 - transparency_blend) + next_frame * transparency_blend
+            result = np.where(transparency_mask, transparency_result, result)
             backward.append(np.clip(result, 0, 1))
         
         # 合并双向结果
