@@ -78,6 +78,19 @@ line-length = 100
 select = ["E", "F", "I", "W"]
 ignore = ["E501"]
 
+[tool.pytest.ini_options]
+norecursedirs = [
+    ".git",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    ".worktrees",
+    "build",
+    "dist",
+    "temp",
+    "tmp",
+]
+
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu128" }]
 torchvision = [{ index = "pytorch-cu128" }]
