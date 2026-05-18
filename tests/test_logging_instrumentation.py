@@ -113,6 +113,46 @@ def test_pipeline_passes_active_ai_model_context_to_despeckle(tmp_path):
     assert captured["active_ai_model"] == "gvm"
 
 
+def test_pipeline_auto_background_mode_reanalyzes_each_process_call(tmp_path):
+    pipeline = MattingPipeline.__new__(MattingPipeline)
+    pipeline.config = MattingConfig()
+    pipeline._notify = lambda callback, current, total, stage: None
+    pipeline._decode_input = lambda input_path: (
+        [np.zeros((4, 4, 3), dtype=np.uint8)],
+        {"width": 4, "height": 4},
+    )
+    analyze_calls = {"count": 0}
+
+    class FakeAnalyzer:
+        def analyze(self, frames):
+            analyze_calls["count"] += 1
+            if analyze_calls["count"] == 1:
+                return hybrid_matte.BackgroundMode.GREEN_SCREEN
+            return hybrid_matte.BackgroundMode.BLACK_BACKGROUND
+
+    pipeline.analyzer = FakeAnalyzer()
+    pipeline.refiner = type("Refiner", (), {"refine": lambda self, frames, alphas: alphas})()
+    pipeline.despeckle = type(
+        "Despeckle",
+        (),
+        {"process": lambda self, alphas, frames=None, context=None: alphas},
+    )()
+    pipeline.stabilizer = type("Stabilizer", (), {"stabilize": lambda self, alphas: alphas})()
+    pipeline.decontaminate = type("Decontaminate", (), {"process": lambda self, frames, alphas, bg_mode: frames})()
+    pipeline._generate_matte = lambda frames, bg_mode, progress_callback: [
+        np.full((4, 4), 0.20, dtype=np.float32)
+    ]
+    pipeline._encode_output = lambda frames, alphas, output_dir, meta: None
+
+    first = pipeline.process(tmp_path / "input_a.png", tmp_path / "out_a")
+    second = pipeline.process(tmp_path / "input_b.png", tmp_path / "out_b")
+
+    assert analyze_calls["count"] == 2
+    assert first["background_mode"] == "green_screen"
+    assert second["background_mode"] == "black_background"
+    assert pipeline.config.background_mode == hybrid_matte.BackgroundMode.AUTO
+
+
 def test_hybrid_green_screen_logs_selected_ai_engine(caplog, monkeypatch):
     hybrid = hybrid_matte.HybridMatte.__new__(hybrid_matte.HybridMatte)
     hybrid.config = MattingConfig()

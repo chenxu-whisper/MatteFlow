@@ -1,9 +1,9 @@
-# MatteFlow - 专业视频抠图工具
+# MatteFlow - 视频 / 图片 / 序列帧抠图工具
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-MatteFlow 是一个高质量视频抠图工具，支持绿幕/黑底视频透明化处理，集成多种 AI 和传统算法。
+MatteFlow 是一个高质量抠图工具，支持视频、图片和序列帧输入，适用于绿幕 / 黑底透明化处理，并集成多种 AI 和传统算法。
 
 ## ✨ 特性
 
@@ -12,7 +12,7 @@ MatteFlow 是一个高质量视频抠图工具，支持绿幕/黑底视频透明
 - 🤖 **AI 增强** - 传统 + AI 边缘细化
 - 📐 **传统算法** - 快速色度键抠图
 - 🎨 **Web UI** - 浏览器界面，实时预览
-- 📦 **批量处理** - 支持视频序列帧输出
+- 📦 **多输入支持** - 支持视频、图片、序列帧处理与导出
 
 ## 🚀 快速开始
 
@@ -31,11 +31,16 @@ pip install -r requirements.txt
 # 3. 下载模型
 python scripts/download_models.py --all
 
-# 4. 运行项目
+# 4. 启动 Web UI
 python scripts/web_gui.py
+
+# 5. 命令行处理示例
+python -m matteflow --input assets/frame/test_frame_1.png --output ./output/image --mode green
+python -m matteflow --input assets/video/test_green_2.mp4 --output ./output/video --mode green
+python -m matteflow --input ./frames --output ./output/sequence --mode auto
 ```
 
-示例测试资源位于 `assets/video/`，例如 `assets/video/test_green_2.mp4`。
+示例测试资源位于 `assets/frame/` 与 `assets/video/`，也支持直接传入序列帧目录。
 
 ### 启动 Web UI
 
@@ -54,7 +59,14 @@ python scripts/web_gui.py
 ### 命令行使用
 
 ```bash
-python -m matteflow --input video.mp4 --output ./output --mode green
+# 单图
+python -m matteflow --input assets/frame/test_frame_1.png --output ./output/image --mode green
+
+# 视频
+python -m matteflow --input assets/video/test_green_2.mp4 --output ./output/video --mode green
+
+# 序列帧目录
+python -m matteflow --input ./frames --output ./output/sequence --mode auto
 ```
 
 ## 📖 使用指南

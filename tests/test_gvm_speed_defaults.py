@@ -32,7 +32,11 @@ def test_pipeline_process_returns_stage_timings(tmp_path):
     )
     pipeline.analyzer = type("Analyzer", (), {"analyze": lambda self, frames: pipeline.config.background_mode})()
     pipeline.refiner = type("Refiner", (), {"refine": lambda self, frames, alphas: alphas})()
-    pipeline.despeckle = type("Despeckle", (), {"process": lambda self, alphas: alphas})()
+    pipeline.despeckle = type(
+        "Despeckle",
+        (),
+        {"process": lambda self, alphas, frames=None, context=None: alphas},
+    )()
     pipeline.stabilizer = type("Stabilizer", (), {"stabilize": lambda self, alphas: alphas})()
     pipeline.decontaminate = type("Decontaminate", (), {"process": lambda self, frames, alphas, bg_mode: frames})()
     pipeline._generate_matte = lambda frames, bg_mode, progress_callback: [

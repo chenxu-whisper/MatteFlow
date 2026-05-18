@@ -123,7 +123,6 @@ class MattingPipeline:
         stage_start = time.time()
         if self.config.background_mode == BackgroundMode.AUTO:
             bg_mode = self.analyzer.analyze(frames)
-            self.config.background_mode = bg_mode
             logger.info("Auto-detected background: %s", bg_mode.value)
         else:
             bg_mode = self.config.background_mode

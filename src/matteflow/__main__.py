@@ -6,15 +6,20 @@ import sys
 from . import MattingPipeline, MattingConfig, QualityMode, BackgroundMode
 
 
-def main():
-    parser = argparse.ArgumentParser(description="MatteFlow - Video Matting Tool")
-    parser.add_argument("--input", "-i", required=True, help="输入视频路径")
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="MatteFlow - 支持视频 / 图片 / 序列帧的抠图工具")
+    parser.add_argument("--input", "-i", required=True, help="输入媒体路径（视频 / 图片 / 序列帧目录）")
     parser.add_argument("--output", "-o", required=True, help="输出目录")
     parser.add_argument("--mode", choices=["green", "black", "auto"], default="auto", help="背景模式")
     parser.add_argument("--quality", choices=["fast", "standard", "high"], default="standard", help="质量模式")
-    parser.add_argument("--ai", action="store_true", help="使用 AI 增强")
-    parser.add_argument("--no-ai", action="store_true", help="禁用 AI")
-    
+    ai_group = parser.add_mutually_exclusive_group()
+    ai_group.add_argument("--ai", action="store_true", help="使用 AI 增强")
+    ai_group.add_argument("--no-ai", action="store_true", help="禁用 AI")
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
     
     # 构建配置
