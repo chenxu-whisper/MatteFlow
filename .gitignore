@@ -52,12 +52,12 @@ htmlcov/
 .gradio/
 
 # Runtime outputs and local artifacts
-output/
-outputs/
-test_output/
-test_output_manual/
-tmp/
-temp/
+/output/
+/outputs/
+/test_output/
+/test_output_manual/
+/tmp/
+/temp/
 *.tmp
 preview.webm
 frames.zip
