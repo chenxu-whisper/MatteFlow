@@ -40,6 +40,7 @@ def test_gui_defaults_match_checker_000040_preset():
     assert defaults["despeckle_threshold"] == 0.0
     assert defaults["transparency_preserve"] == 0.7
     assert defaults["gvm_max_internal_size"] == 768
+    assert defaults["auto_optimize"] is False
     assert defaults["generate_zip"] is False
     assert defaults["output_matte"] is True
     assert defaults["output_comp"] is False
@@ -100,6 +101,7 @@ def test_apply_recommended_preset_uses_checker_000040_values(monkeypatch):
     assert preset["despeckle_threshold"] == 0.0
     assert preset["transparency_preserve"] == 0.7
     assert preset["gvm_max_internal_size"] == 768
+    assert preset["auto_optimize"] is False
     assert preset["generate_zip"] is False
     assert preset["output_fg"] is False
     assert preset["output_matte"] is True
@@ -157,6 +159,7 @@ def test_gui_fixed_low_value_controls_keep_safe_defaults():
 def test_process_video_signature_only_exposes_effective_advanced_controls():
     params = set(inspect.signature(web_gui.process_video).parameters)
 
+    assert "auto_optimize" in params
     assert "transparency_preserve" in params
     assert "gvm_max_internal_size" in params
     assert "generate_zip" in params
@@ -225,6 +228,7 @@ def test_process_video_applies_effective_advanced_controls(monkeypatch, tmp_path
         temporal_strength=0.5,
         transparency_preserve=0.65,
         gvm_max_internal_size=1024,
+        auto_optimize=False,
         screen_color="auto",
         key_strength=1.0,
         clip_black=0.0,
@@ -269,3 +273,88 @@ def test_process_video_applies_effective_advanced_controls(monkeypatch, tmp_path
     assert preview is None
     assert "完成" in status
     assert result[-1].endswith("processed_000000.png")
+
+
+def test_process_video_applies_auto_optimized_input_params(monkeypatch, tmp_path):
+    captured = {}
+
+    class FakePipeline:
+        def __init__(self, config):
+            captured["config"] = config
+
+        def process(self, video_path, output_dir, progress_callback):
+            processed_dir = Path(output_dir) / "Processed"
+            processed_dir.mkdir(parents=True, exist_ok=True)
+            Image.fromarray(np.zeros((2, 2, 4), dtype=np.uint8), mode="RGBA").save(
+                processed_dir / "processed_000000.png"
+            )
+            return {"frames_processed": 1, "fps": 1.0, "elapsed_time": 1.0}
+
+    monkeypatch.setattr(web_gui, "MattingPipeline", FakePipeline)
+    monkeypatch.setattr(web_gui, "_resolve_gui_output_dir", lambda video_path: tmp_path)
+    monkeypatch.setattr(web_gui, "_create_preview_video", lambda output_dir, preview_path: None)
+    monkeypatch.setattr(web_gui, "_create_preview_frames", lambda output_dir: (None, None))
+
+    image_path = tmp_path / "input.png"
+    Image.fromarray(np.full((4, 4, 3), [20, 185, 55], dtype=np.uint8), mode="RGB").save(image_path)
+
+    result = web_gui.process_video(
+        video_path=str(image_path),
+        mode="green",
+        quality="standard",
+        use_ai="gvm",
+        pure_color_mode=True,
+        use_guided_filter=False,
+        green_similarity=0.4,
+        green_despill=0.7,
+        green_hair=0.8,
+        white_protect_thresh=180,
+        white_protect_sat=25,
+        edge_despill_factor=1.2,
+        black_threshold=0.03,
+        black_glow=0.9,
+        black_particle=0.7,
+        edge_softness=0.0,
+        temporal_strength=0.5,
+        transparency_preserve=0.7,
+        gvm_max_internal_size=768,
+        auto_optimize=True,
+        screen_color="auto",
+        key_strength=1.0,
+        clip_black=0.0,
+        clip_white=1.0,
+        shrink_grow=0,
+        edge_blur=0,
+        despill_enable=True,
+        despill_strength=0.7,
+        despill_color="green",
+        despeckle_enable=True,
+        despeckle_radius=2,
+        despeckle_threshold=0.0,
+        color_space="sRGB",
+        output_fg=False,
+        output_matte=True,
+        output_comp=False,
+        output_processed=True,
+        generate_zip=False,
+        ai_gamma=0.8,
+        ai_threshold=0.1,
+        ai_gain=1.2,
+        ai_sharpen=0.0,
+    )
+
+    assert captured["config"].screen_color == "green"
+    status = result[2]
+    assert "自动优化" in status
+    assert "本次实际参数" in status
+    assert "screen=green" in status
+    assert "similarity=0.35" in status
+    assert "key=1.00" in status
+    assert "preserve=0.70" in status
+    assert "despill=0.70" in status
+    assert "edge_despill=1.20" in status
+    assert "clip=0.00/1.00" in status
+    assert "white_protect=180/25" in status
+    assert "shrink_grow=0" in status
+    assert "edge_blur=0" in status
+    assert "gvm_size=768" in status

@@ -22,6 +22,7 @@ import gradio as gr
 from PIL import Image
 
 from matteflow import MattingPipeline, MattingConfig, QualityMode, BackgroundMode
+from matteflow.auto_params import apply_suggestion, suggest_input_params
 from matteflow.input.formats import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from matteflow.utils.cv_compat import video_writer_fourcc
 from matteflow.utils.model_checker import ModelChecker
@@ -58,6 +59,7 @@ GUI_DEFAULTS = {
     "despeckle_threshold": 0.0,
     "transparency_preserve": 0.7,
     "gvm_max_internal_size": 768,
+    "auto_optimize": False,
     "generate_zip": False,
     "output_fg": False,
     "output_matte": True,
@@ -113,6 +115,7 @@ RECOMMENDED_PRESET_OUTPUT_KEYS = [
     "despeckle_threshold",
     "transparency_preserve",
     "gvm_max_internal_size",
+    "auto_optimize",
     "generate_zip",
     "output_fg",
     "output_matte",
@@ -205,6 +208,7 @@ def _apply_recommended_preset() -> dict:
         "despeckle_threshold": GUI_DEFAULTS["despeckle_threshold"],
         "transparency_preserve": GUI_DEFAULTS["transparency_preserve"],
         "gvm_max_internal_size": GUI_DEFAULTS["gvm_max_internal_size"],
+        "auto_optimize": GUI_DEFAULTS["auto_optimize"],
         "generate_zip": GUI_DEFAULTS["generate_zip"],
         "output_fg": GUI_DEFAULTS["output_fg"],
         "output_matte": GUI_DEFAULTS["output_matte"],
@@ -238,6 +242,7 @@ def process_video(
     temporal_strength,
     transparency_preserve,
     gvm_max_internal_size,
+    auto_optimize,
     # Chroma Key 参数
     screen_color,
     key_strength,
@@ -351,6 +356,13 @@ def process_video(
     config.output_processed = output_processed
     config.generate_zip_by_default = generate_zip
 
+    auto_summary = ""
+    if auto_optimize:
+        suggestion = suggest_input_params(video_path, config)
+        apply_suggestion(config, suggestion)
+        auto_summary = f"\n{suggestion.summary}{_format_actual_parameter_summary(config)}"
+        logger.info("Applied auto optimization for %s: %s", video_path, suggestion)
+
     # 处理
     _output_dir = _resolve_gui_output_dir(video_path)
     logger.info(
@@ -403,7 +415,10 @@ def process_video(
         input_preview, output_preview = _create_preview_frames(_output_dir)
         transparent_png = _find_transparent_png_download(_output_dir)
 
-        status = f"✅ 完成!{result['frames_processed']}帧 | {result['fps']:.1f} fps | 耗时 {result['elapsed_time']:.1f}s"
+        status = (
+            f"✅ 完成!{result['frames_processed']}帧 | {result['fps']:.1f} fps | "
+            f"耗时 {result['elapsed_time']:.1f}s{auto_summary}"
+        )
 
         # 返回预览视频和首帧对比图
         # Gradio Video 组件需要字符串路径,且视频必须可被浏览器播放
@@ -452,6 +467,24 @@ def process_video(
     except Exception as e:
         logger.exception("GUI processing failed for video=%s", video_path)
         return None, None, f"❌ 错误: {str(e)}", None, None, 0, None
+
+
+def _format_actual_parameter_summary(config):
+    """Return the effective runtime parameters after optional auto optimization."""
+    return (
+        "\n本次实际参数: "
+        f"screen={config.screen_color}, "
+        f"similarity={config.green_similarity:.2f}, "
+        f"key={config.key_strength:.2f}, "
+        f"preserve={config.transparency_preserve:.2f}, "
+        f"despill={config.green_despill_strength:.2f}, "
+        f"edge_despill={config.edge_despill_factor:.2f}, "
+        f"clip={config.clip_black:.2f}/{config.clip_white:.2f}, "
+        f"white_protect={config.white_protect_brightness:.0f}/{config.white_protect_saturation:.0f}, "
+        f"shrink_grow={config.shrink_grow}, "
+        f"edge_blur={config.edge_blur}, "
+        f"gvm_size={config.gvm_max_internal_size}"
+    )
 
 
 def _create_preview_frames(output_dir):
@@ -832,6 +865,11 @@ def create_ui():
                         value=GUI_DEFAULTS["gvm_max_internal_size"],
                         label="GVM 推理尺寸"
                     )
+                    auto_optimize = gr.Checkbox(
+                        value=GUI_DEFAULTS["auto_optimize"],
+                        label="自动优化参数",
+                        info="图片直接分析当前图；视频/序列帧默认抽中间帧，本次处理临时优化参数"
+                    )
 
                     with gr.Accordion("高级绿幕参数", open=False):
                         screen_color = gr.Radio(
@@ -1040,6 +1078,7 @@ def create_ui():
             despeckle_threshold,
             transparency_preserve,
             gvm_max_internal_size,
+            auto_optimize,
             generate_zip,
             output_fg,
             output_matte,
@@ -1080,6 +1119,7 @@ def create_ui():
                 temporal_str,
                 transparency_preserve,
                 gvm_max_internal_size,
+                auto_optimize,
                 # Chroma Key 参数
                 screen_color,
                 key_strength,

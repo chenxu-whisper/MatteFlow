@@ -81,6 +81,9 @@ class MattingConfig:
     edge_softness: float = 0.3            # 边缘柔化
     transparency_preserve: float = 0.7    # 半透明保留强度
     temporal_strength: float = 0.5        # 时序稳定强度
+    transparency_temporal_low: float = 0.03   # 半透明时序稳定下限
+    transparency_temporal_high: float = 0.75  # 半透明时序稳定上限
+    transparency_temporal_blend: float = 0.20 # 半透明区额外时序融合权重
     
     # 毛发/羽毛专项
     hair_protect: bool = True             # 发丝/毛发保护

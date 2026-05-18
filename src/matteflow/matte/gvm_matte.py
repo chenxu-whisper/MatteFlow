@@ -113,6 +113,32 @@ class GVMMatte:
         if getattr(self.model, "unet", None) is not None:
             self.model.unet = self.model.unet.to(self.device, dtype=torch.float32)
 
+    def _preserve_internal_swirl_content(self, frame: np.ndarray, alpha: np.ndarray) -> np.ndarray:
+        """Recover small low-alpha holes inside supported swirl-like regions."""
+        alpha_f = np.clip(alpha.astype(np.float32, copy=False), 0.0, 1.0)
+        frame_f = frame.astype(np.float32, copy=False)
+
+        r = frame_f[:, :, 0]
+        g = frame_f[:, :, 1]
+        b = frame_f[:, :, 2]
+        brightness = (r + g + b) / 3.0
+        chroma = np.maximum.reduce([r, g, b]) - np.minimum.reduce([r, g, b])
+
+        swirl_color = (
+            (b > g + 8.0)
+            | ((r > g + 8.0) & (b > g + 4.0))
+            | ((brightness > 150.0) & (chroma < 70.0) & (g < 205.0))
+        )
+        weak_alpha = alpha_f < 0.42
+
+        alpha_u8 = np.clip(alpha_f * 255.0, 0.0, 255.0).astype(np.uint8)
+        local_support = cv2.dilate(alpha_u8, np.ones((9, 9), np.uint8), iterations=1).astype(np.float32) / 255.0
+        support_mask = local_support > 0.45
+
+        recovered = np.clip(local_support * 0.58, 0.0, 0.55)
+        repaired = np.where(swirl_color & weak_alpha & support_mask, np.maximum(alpha_f, recovered), alpha_f)
+        return np.clip(repaired, 0.0, 1.0)
+
     def _run_sequence_inference(self, frames: List[np.ndarray]) -> List[np.ndarray]:
         """Run the upstream GVM sequence API and load the generated mattes."""
         if not frames:
@@ -164,7 +190,9 @@ class GVMMatte:
                 expected_h, expected_w = frame.shape[:2]
                 if alpha.shape != (expected_h, expected_w):
                     alpha = cv2.resize(alpha, (expected_w, expected_h), interpolation=cv2.INTER_LINEAR)
-                alphas.append(alpha.astype(np.float32) / 255.0)
+                alpha_f = alpha.astype(np.float32) / 255.0
+                alpha_f = self._preserve_internal_swirl_content(frame, alpha_f)
+                alphas.append(alpha_f)
 
             logger.info("Completed GVM sequence inference with %s matte frames", len(alphas))
             return alphas

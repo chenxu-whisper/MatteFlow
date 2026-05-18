@@ -23,6 +23,9 @@ class ColorDecontaminate:
                 result = frame.copy()
             processed.append(result)
         return processed
+
+    def _transparency_band(self, alpha: np.ndarray, low: float = 0.02, high: float = 0.75) -> np.ndarray:
+        return (alpha > low) & (alpha < high)
     
     def _remove_green_spill(self, frame: np.ndarray, alpha: np.ndarray) -> np.ndarray:
         """去除绿溢色 - 保守版：只处理明显绿边，保护白色/浅色区域"""
@@ -47,6 +50,13 @@ class ColorDecontaminate:
         edge_mask = (alpha > 0.05) & (alpha < 0.95)
         glow_mask = (alpha > 0.005) & (alpha < 0.85)
         subtle_green_haze = (g > r + 4) & (g >= b - 3) & glow_mask
+        pink_glow_haze = (
+            glow_mask
+            & (brightness > 135)
+            & (r > b + 10)
+            & (g > b + 6)
+            & (g > 145)
+        )
         
         # 4. 计算绿色过量（只在边缘且明显发绿的地方）
         green_excess = np.maximum(0, g - np.maximum(r, b))
@@ -62,11 +72,20 @@ class ColorDecontaminate:
             * strength
             * self.config.edge_despill_factor
         )
+        pink_haze_excess = np.maximum(0, g - b - 2)
+        pink_haze_despill = (
+            pink_haze_excess
+            * strength
+            * haze_factor
+            * self.config.edge_despill_factor
+            * 1.55
+        )
         
         # 主体边缘只处理明显发绿；辉光区额外处理低饱和绿色雾边。
-        despill_mask = (green_tint & edge_mask) | subtle_green_haze
+        despill_mask = (green_tint & edge_mask) | subtle_green_haze | pink_glow_haze
         glow_despill = np.maximum(haze_despill, target_haze_despill)
         despill = np.where(subtle_green_haze, np.maximum(despill, glow_despill), despill)
+        despill = np.where(pink_glow_haze, np.maximum(despill, pink_haze_despill), despill)
         despill = despill * despill_mask
         
         # 白色区域：几乎不去绿（保护白色毛发/耳朵）
@@ -83,7 +102,8 @@ class ColorDecontaminate:
         # 7. 半透明辉光补亮：AI/绿幕融合会保留 alpha，但 RGB 仍可能是暗背景色，
         # 合成到棋盘或任意背景上会表现为黑边。只修低亮度半透明区，避开主体白色区域。
         corrected_brightness = (r_corrected + g_corrected + b_corrected) / 3.0
-        dark_glow = (alpha > 0.08) & (alpha < 0.75) & (corrected_brightness < 95) & (~white_mask)
+        transparency_mask = self._transparency_band(alpha, 0.08, 0.75)
+        dark_glow = transparency_mask & (corrected_brightness < 95) & (~white_mask)
         lift = np.clip((115 - corrected_brightness) * 0.9, 0, 65) * dark_glow
         r_corrected = r_corrected + lift * 1.20
         g_corrected = g_corrected + lift * 0.12
@@ -118,6 +138,7 @@ class ColorDecontaminate:
         # 3. 颜色增强（去灰）- 保护已有颜色的粒子
         hsv = cv2.cvtColor(np.clip(result, 0, 255).astype(np.uint8), cv2.COLOR_RGB2HSV).astype(np.float32)
         h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+        transparency_mask = self._transparency_band(alpha, 0.02, 0.75)
         
         # 只对灰度区域增强饱和度
         gray_mask = (alpha > 0.1) & (s < 50) & (v > 15) & (color_range < 15)
@@ -128,6 +149,14 @@ class ColorDecontaminate:
         dark_mask = (alpha > 0.05) & (v < 60) & (v > 5)  # v > 5 保护纯黑
         v_boost = v * (1.0 + self.config.black_contrast_restore * 0.2)
         v = np.where(dark_mask, np.clip(v_boost, 0, 255), v)
+
+        # 4.1 半透明粒子/灰雾单独修复：更积极地抬亮，并避免仍然偏灰。
+        dim_particle = transparency_mask & (v < 70) & (v > 5)
+        gray_haze_mask = transparency_mask & (s < 32) & (color_range < 18) & (v > 10)
+        particle_v_boost = v + np.clip((78 - v) * 0.35, 0, 18)
+        v = np.where(dim_particle, np.clip(particle_v_boost, 0, 255), v)
+        haze_s_boost = s + np.clip((40 - s) * 0.45, 0, 18)
+        s = np.where(gray_haze_mask, np.clip(haze_s_boost, 0, 255), s)
         
         hsv[:, :, 1] = s
         hsv[:, :, 2] = v
@@ -143,5 +172,13 @@ class ColorDecontaminate:
             result[:, :, c] = np.where(particle_mask, 
                                        result[:, :, c] * (1 - blend) + original[:, :, c] * blend,
                                        result[:, :, c])
+
+        # 半透明低亮粒子再做一次轻量 RGB 提亮，避免只提 V 后仍显得发灰。
+        dim_particle_rgb = transparency_mask & (np.mean(result, axis=2) < 52)
+        rgb_lift = np.clip((58 - np.mean(result, axis=2)) * 0.35, 0, 10)
+        result = result.astype(np.float32)
+        result[:, :, 0] = np.where(dim_particle_rgb, result[:, :, 0] + rgb_lift * 0.85, result[:, :, 0])
+        result[:, :, 1] = np.where(dim_particle_rgb, result[:, :, 1] + rgb_lift * 1.00, result[:, :, 1])
+        result[:, :, 2] = np.where(dim_particle_rgb, result[:, :, 2] + rgb_lift * 0.90, result[:, :, 2])
         
         return np.clip(result, 0, 255).astype(np.uint8)
