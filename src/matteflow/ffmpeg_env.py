@@ -24,6 +24,14 @@ class MediaToolDiscoveryResult:
     complete: bool
     download_required: bool
 
+    @property
+    def missing_ffmpeg(self) -> bool:
+        return self.ffmpeg_path is None
+
+    @property
+    def missing_ffprobe(self) -> bool:
+        return self.ffmpeg_path is not None and self.ffprobe_path is None
+
 
 def _default_common_candidate_dirs() -> list[str]:
     home = Path.home()

@@ -184,6 +184,21 @@ class ModelChecker:
         """获取可用模型列表"""
         results = self.check_all_models()
         return [name for name, info in results.items() if info["available"]]
+
+    def collect_model_facts(self) -> Dict[str, Dict]:
+        """导出稳定的模型诊断事实，供 diagnostics 层消费。"""
+        results = self.check_all_models()
+        facts: Dict[str, Dict] = {}
+        for key, info in results.items():
+            facts[key] = {
+                "model_key": key,
+                "display_name": info["name"],
+                "available": bool(info["available"]),
+                "path": info["path"],
+                "reason": info["reason"],
+                "auto_download": bool(info["auto_download"]),
+            }
+        return facts
     
     def get_ui_choices(self) -> List[Tuple[str, str]]:
         """获取 UI 选项列表"""

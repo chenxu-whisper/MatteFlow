@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping, Optional
 
 from .config import BackgroundMode, MattingConfig, QualityMode
+from .diagnostics import from_exception
 from .errors import ProcessingError
 
 ProgressCallback = Callable[[int, int, str], None]
@@ -145,12 +146,6 @@ class MatteFlowService:
 
     @staticmethod
     def _format_processing_error(exc: Exception) -> str:
-        raw_message = str(exc)
-        lowered = raw_message.lower()
-        if "cuda out of memory" in lowered or "outofmemory" in lowered:
-            return (
-                "GPU memory is insufficient while processing this job. "
-                "Close other GPU applications, reduce quality/resolution, or choose a lighter model. "
-                f"Original error: {raw_message}"
-            )
-        return f"MatteFlow processing failed: {raw_message}"
+        report = from_exception(exc, context={"stage": "process"})
+        first_item = report.items[0]
+        return f"{first_item.title}: {first_item.summary} Original error: {exc}"

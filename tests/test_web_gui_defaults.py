@@ -10,6 +10,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from matteflow.diagnostics import DiagnosticCode, DiagnosticItem, DiagnosticReport, DiagnosticSeverity
+from matteflow.job_queue import GPUJobQueue
 from matteflow.service import ProcessResult
 from scripts import web_gui
 
@@ -156,6 +158,61 @@ def test_gui_fixed_low_value_controls_keep_safe_defaults():
     assert fixed["color_space"] == "sRGB"
     assert fixed["despill_enable"] is True
     assert fixed["despill_color"] == "green"
+
+
+def test_format_diagnostic_report_prioritizes_errors():
+    report = DiagnosticReport(
+        items=(
+            DiagnosticItem(
+                code=DiagnosticCode.GPU_OUT_OF_MEMORY,
+                severity=DiagnosticSeverity.ERROR,
+                title="GPU 显存不足",
+                summary="当前任务执行时显存不足。",
+                actions=("关闭其他 GPU 程序",),
+                blocking=True,
+            ),
+            DiagnosticItem(
+                code=DiagnosticCode.MODEL_MISSING,
+                severity=DiagnosticSeverity.WARNING,
+                title="模型缺失",
+                summary="部分模型当前不可用。",
+                actions=("检查模型目录",),
+                blocking=False,
+            ),
+        )
+    )
+
+    text = web_gui._format_diagnostic_report(report)
+
+    assert "GPU 显存不足" in text
+    assert "关闭其他 GPU 程序" in text
+    assert "模型缺失" in text
+
+
+def test_collect_environment_diagnostics_returns_blocking_report(monkeypatch):
+    from matteflow.ffmpeg_env import MediaToolDiscoveryResult
+
+    monkeypatch.setattr(
+        web_gui,
+        "discover_media_tools",
+        lambda: MediaToolDiscoveryResult(
+            ffmpeg_path=None,
+            ffprobe_path=None,
+            bin_dir=None,
+            source=None,
+            complete=False,
+            download_required=True,
+        ),
+    )
+
+    class FakeChecker:
+        def collect_model_facts(self):
+            return {}
+
+    report = web_gui._collect_environment_diagnostics(model_checker=FakeChecker())
+
+    assert report.ok is False
+    assert report.blocking_count == 1
 
 
 def test_process_video_signature_only_exposes_effective_advanced_controls():
@@ -365,3 +422,64 @@ def test_process_video_applies_auto_optimized_input_params(monkeypatch, tmp_path
     assert "shrink_grow=0" in status
     assert "edge_blur=0" in status
     assert "gvm_size=768" in status
+
+
+def test_process_video_formats_failures_with_diagnostics(monkeypatch, tmp_path):
+    class FailingService:
+        def process(self, params, progress_callback=None, cancel_check=None):
+            raise RuntimeError("decoder exploded")
+
+    local_queue = GPUJobQueue()
+    monkeypatch.setattr(web_gui, "_resolve_gui_output_dir", lambda video_path: tmp_path)
+
+    result = web_gui.process_video(
+        video_path=str(tmp_path / "input.png"),
+        mode="green",
+        quality="standard",
+        use_ai="gvm",
+        pure_color_mode=True,
+        use_guided_filter=False,
+        green_similarity=0.4,
+        green_despill=0.7,
+        green_hair=0.8,
+        white_protect_thresh=180,
+        white_protect_sat=25,
+        edge_despill_factor=1.2,
+        black_threshold=0.03,
+        black_glow=0.9,
+        black_particle=0.7,
+        edge_softness=0.0,
+        temporal_strength=0.5,
+        transparency_preserve=0.65,
+        gvm_max_internal_size=1024,
+        auto_optimize=False,
+        screen_color="auto",
+        key_strength=1.0,
+        clip_black=0.0,
+        clip_white=1.0,
+        shrink_grow=0,
+        edge_blur=0,
+        despill_enable=True,
+        despill_strength=0.7,
+        despill_color="green",
+        despeckle_enable=True,
+        despeckle_radius=2,
+        despeckle_threshold=0.0,
+        color_space="sRGB",
+        output_fg=False,
+        output_matte=True,
+        output_comp=False,
+        output_processed=True,
+        generate_zip=False,
+        ai_gamma=0.8,
+        ai_threshold=0.1,
+        ai_gain=1.2,
+        ai_sharpen=0.0,
+        service_factory=lambda: FailingService(),
+        queue_factory=lambda: local_queue,
+    )
+
+    status = result[2]
+    assert "**ERROR** 处理失败" in status
+    assert "MatteFlow 在处理任务时发生未分类错误。" in status
+    assert "- 查看日志输出" in status

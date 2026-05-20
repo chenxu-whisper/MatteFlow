@@ -105,3 +105,21 @@ def test_gvm_wrapper_imports_from_vendored_runtime():
     module = importlib.import_module("matteflow.vendor.gvm_core.wrapper")
 
     assert hasattr(module, "GVMProcessor")
+
+
+def test_collect_model_facts_exposes_reason_and_path(tmp_path):
+    checker = ModelChecker()
+    checker.cache_dir = tmp_path
+    checker.matteflow_dir = tmp_path
+
+    facts = checker.collect_model_facts()
+
+    assert "gvm" in facts
+    assert set(facts["gvm"]) >= {
+        "model_key",
+        "display_name",
+        "available",
+        "path",
+        "reason",
+        "auto_download",
+    }

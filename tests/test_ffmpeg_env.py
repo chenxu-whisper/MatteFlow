@@ -96,3 +96,17 @@ def test_discover_media_tools_reports_download_required_for_imageio_only():
     assert result.ffmpeg_path == "C:/Users/Admin/AppData/Local/imageio/ffmpeg.exe"
     assert result.ffprobe_path is None
     assert result.bin_dir == "C:/Users/Admin/AppData/Local/imageio"
+
+
+def test_discover_media_tools_exposes_missing_flags_for_incomplete_toolchain():
+    result = discover_media_tools(
+        ffmpeg_which=lambda name: None,
+        ffprobe_which=lambda name: None,
+        path_exists=lambda path: path == "C:/Users/Admin/AppData/Local/imageio/ffmpeg.exe",
+        imageio_ffmpeg_getter=lambda: "C:/Users/Admin/AppData/Local/imageio/ffmpeg.exe",
+        common_candidate_dirs=[],
+    )
+
+    assert result.complete is False
+    assert result.missing_ffmpeg is False
+    assert result.missing_ffprobe is True

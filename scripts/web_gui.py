@@ -23,6 +23,14 @@ from PIL import Image
 
 from matteflow import MattingPipeline, MattingConfig, QualityMode, BackgroundMode
 from matteflow.auto_params import apply_suggestion, suggest_input_params
+from matteflow.diagnostics import (
+    DiagnosticReport,
+    from_exception,
+    from_media_tools,
+    from_model_status,
+    merge_reports,
+)
+from matteflow.ffmpeg_env import discover_media_tools
 from matteflow.input.formats import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from matteflow.job_queue import GPUJob, GPUJobQueue, JobStatus, JobType
 from matteflow.job_worker import JobWorker
@@ -236,6 +244,31 @@ def _default_queue_factory():
 
 def _default_worker_factory(queue, service):
     return JobWorker(queue, service)
+
+
+def _collect_environment_diagnostics(model_checker=None) -> DiagnosticReport:
+    checker = model_checker or _model_checker
+    media_report = from_media_tools(discover_media_tools())
+    model_report = from_model_status(checker.collect_model_facts())
+    return merge_reports(media_report, model_report)
+
+
+def _format_diagnostic_report(report: DiagnosticReport) -> str:
+    if not report.items:
+        return "未检测到阻断问题。"
+
+    lines = []
+    for item in report.items:
+        prefix = {
+            "error": "ERROR",
+            "warning": "WARNING",
+            "info": "INFO",
+        }[item.severity.value]
+        lines.append(f"**{prefix}** {item.title}")
+        lines.append(item.summary)
+        for action in item.actions[:3]:
+            lines.append(f"- {action}")
+    return "\n".join(lines)
 
 
 def _build_process_job_params(video_path, output_dir, config):
@@ -722,7 +755,8 @@ def process_video(
         )
     except Exception as e:
         logger.exception("GUI processing failed for video=%s", video_path)
-        return None, None, f"❌ 错误: {str(e)}", None, None, 0, None
+        report = from_exception(e, context={"stage": "process_video", "input_path": str(video_path)})
+        return None, None, _format_diagnostic_report(report), None, None, 0, None
 
 
 def _format_actual_parameter_summary(config):
