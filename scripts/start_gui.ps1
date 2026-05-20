@@ -6,8 +6,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ProjectRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).ProviderPath
 Set-Location $ProjectRoot
+
+Write-Host "Bootstrapping FFmpeg environment..."
+& (Join-Path $PSScriptRoot "configure_ffmpeg.ps1")
 
 Write-Host "Checking port $Port..."
 $connections = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue

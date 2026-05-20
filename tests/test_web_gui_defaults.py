@@ -8,7 +8,9 @@ from PIL import Image
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from matteflow.service import ProcessResult
 from scripts import web_gui
 
 
@@ -179,26 +181,26 @@ def test_process_video_signature_only_exposes_effective_advanced_controls():
 def test_process_video_applies_effective_advanced_controls(monkeypatch, tmp_path):
     captured = {}
 
-    class FakePipeline:
-        def __init__(self, config):
-            captured["config"] = config
-
-        def process(self, video_path, output_dir, progress_callback):
-            captured["video_path"] = video_path
-            captured["output_dir"] = output_dir
+    class FakeService:
+        def process(self, params, progress_callback=None, cancel_check=None):
+            captured["params"] = params
             captured["progress_callback"] = progress_callback
-            processed_dir = Path(output_dir) / "Processed"
+            captured["cancel_check"] = cancel_check
+            processed_dir = Path(params.output_dir) / "Processed"
             processed_dir.mkdir(parents=True, exist_ok=True)
             Image.fromarray(np.zeros((2, 2, 4), dtype=np.uint8), mode="RGBA").save(
                 processed_dir / "processed_000000.png"
             )
-            return {
-                "frames_processed": 1,
-                "fps": 1.0,
-                "elapsed_time": 1.0,
-            }
+            return ProcessResult(
+                success=True,
+                input_path=params.input_path,
+                output_dir=params.output_dir,
+                background_mode="green_screen",
+                frame_count=3,
+                processing_time=1.5,
+                timings={"fps": 2.0},
+            )
 
-    monkeypatch.setattr(web_gui, "MattingPipeline", FakePipeline)
     monkeypatch.setattr(web_gui, "_resolve_gui_output_dir", lambda video_path: tmp_path)
     monkeypatch.setattr(web_gui, "_create_preview_video", lambda output_dir, preview_path: None)
     monkeypatch.setattr(web_gui, "_create_preview_frames", lambda output_dir: (None, None))
@@ -251,28 +253,33 @@ def test_process_video_applies_effective_advanced_controls(monkeypatch, tmp_path
         ai_threshold=0.1,
         ai_gain=1.2,
         ai_sharpen=0.0,
+        service_factory=lambda: FakeService(),
     )
     preview, zip_file, status, *_ = result
 
-    config = captured["config"]
-    assert config.green_similarity == 0.4
-    assert config.green_hair_detail == 0.8
-    assert config.white_protect_brightness == 180
-    assert config.white_protect_saturation == 25
-    assert config.edge_despill_factor == 1.2
-    assert config.screen_color == "auto"
-    assert config.key_strength == 1.0
-    assert config.clip_black == 0.0
-    assert config.clip_white == 1.0
-    assert config.shrink_grow == 0
-    assert config.edge_blur == 0
-    assert config.transparency_preserve == 0.65
-    assert config.gvm_max_internal_size == 1024
-    assert config.generate_zip_by_default is False
+    overrides = captured["params"].config_overrides
+    assert overrides["green_similarity"] == 0.4
+    assert overrides["green_hair_detail"] == 0.8
+    assert overrides["white_protect_brightness"] == 180
+    assert overrides["white_protect_saturation"] == 25
+    assert overrides["edge_despill_factor"] == 1.2
+    assert overrides["screen_color"] == "auto"
+    assert overrides["key_strength"] == 1.0
+    assert overrides["clip_black"] == 0.0
+    assert overrides["clip_white"] == 1.0
+    assert overrides["shrink_grow"] == 0
+    assert overrides["edge_blur"] == 0
+    assert overrides["transparency_preserve"] == 0.65
+    assert overrides["gvm_max_internal_size"] == 1024
+    assert overrides["generate_zip_by_default"] is False
     assert zip_file is None
     assert preview is None
     assert "完成" in status
+    assert "3帧" in status
+    assert "耗时 1.5s" in status
+    assert "2.0 fps" in status
     assert result[-1].endswith("processed_000000.png")
+    assert result[5] == 3
 
 
 def test_process_video_applies_auto_optimized_input_params(monkeypatch, tmp_path):

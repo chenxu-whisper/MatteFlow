@@ -154,3 +154,24 @@ def test_cancel_all_cancels_queued_and_requests_running_cancel(tmp_path):
     assert queued.status == JobStatus.CANCELLED
     assert queue.queued_snapshot == ()
     assert queued in queue.history_snapshot
+
+
+def test_clear_history_removes_terminal_jobs_without_touching_running_or_queued(tmp_path):
+    queue = GPUJobQueue()
+    running = queue.submit(make_job(tmp_path, input_name="running.png"))
+    queued = queue.submit(make_job(tmp_path, input_name="queued.png"))
+    completed = make_job(tmp_path, input_name="done.png", output_name="done-out")
+    failed = make_job(tmp_path, input_name="failed.png", output_name="failed-out")
+    queue.start_job(running)
+    completed.status = JobStatus.COMPLETED
+    completed.stage = "completed"
+    failed.status = JobStatus.FAILED
+    failed.stage = "failed"
+    queue._history.extend([completed, failed])
+
+    removed = queue.clear_history()
+
+    assert removed == 2
+    assert queue.running_job is running
+    assert queue.queued_snapshot == (queued,)
+    assert queue.history_snapshot == ()

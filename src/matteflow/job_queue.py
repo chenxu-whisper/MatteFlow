@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Deque, Optional
 from uuid import uuid4
 
-from .service import ProcessJobParams
+from .service import ProcessJobParams, ProcessResult
 
 
 class JobType(str, Enum):
@@ -43,6 +43,7 @@ class GPUJob:
     current: int = 0
     total: int = 0
     stage: str = "queued"
+    result: Optional[ProcessResult] = None
     _cancel_requested: bool = False
 
     def __post_init__(self) -> None:
@@ -158,6 +159,14 @@ class GPUJobQueue:
             job = self._queued.popleft()
             job.request_cancel()
             self._archive_cancelled(job)
+
+    def clear_history(self, statuses: Optional[set[JobStatus]] = None) -> int:
+        """Remove archived jobs matching terminal statuses and return count."""
+        target_statuses = statuses or {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}
+        remaining = [job for job in self._history if job.status not in target_statuses]
+        removed = len(self._history) - len(remaining)
+        self._history = remaining
+        return removed
 
     def _find_active_duplicate(self, job: GPUJob) -> Optional[GPUJob]:
         for candidate in self._queued:

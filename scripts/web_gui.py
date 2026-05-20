@@ -24,6 +24,9 @@ from PIL import Image
 from matteflow import MattingPipeline, MattingConfig, QualityMode, BackgroundMode
 from matteflow.auto_params import apply_suggestion, suggest_input_params
 from matteflow.input.formats import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
+from matteflow.job_queue import GPUJob, GPUJobQueue, JobStatus, JobType
+from matteflow.job_worker import JobWorker
+from matteflow.service import MatteFlowService, ProcessJobParams
 from matteflow.utils.cv_compat import video_writer_fourcc
 from matteflow.utils.model_checker import ModelChecker
 from matteflow.utils.output_paths import (
@@ -126,6 +129,7 @@ RECOMMENDED_PRESET_OUTPUT_KEYS = [
 # 全局状态
 _output_dir = None
 _current_preview_index = 0
+_gui_job_queue = GPUJobQueue()
 
 # 检查可用模型
 _model_checker = ModelChecker()
@@ -222,6 +226,236 @@ def _recommended_preset_updates():
     return tuple(gr.update(value=preset[key]) for key in RECOMMENDED_PRESET_OUTPUT_KEYS)
 
 
+def _default_service_factory():
+    return MatteFlowService(pipeline_factory=MattingPipeline)
+
+
+def _default_queue_factory():
+    return _gui_job_queue
+
+
+def _default_worker_factory(queue, service):
+    return JobWorker(queue, service)
+
+
+def _build_process_job_params(video_path, output_dir, config):
+    config_overrides = {
+        "ai_enhance": config.ai_enhance,
+        "pure_color_mode": config.pure_color_mode,
+        "use_guided_filter": config.use_guided_filter,
+        "green_similarity": config.green_similarity,
+        "green_despill_strength": config.green_despill_strength,
+        "green_hair_detail": config.green_hair_detail,
+        "white_protect_brightness": config.white_protect_brightness,
+        "white_protect_saturation": config.white_protect_saturation,
+        "edge_despill_factor": config.edge_despill_factor,
+        "black_threshold": config.black_threshold,
+        "black_glow_preserve": config.black_glow_preserve,
+        "black_particle_boost": config.black_particle_boost,
+        "edge_softness": config.edge_softness,
+        "temporal_strength": config.temporal_strength,
+        "transparency_preserve": config.transparency_preserve,
+        "gvm_max_internal_size": config.gvm_max_internal_size,
+        "ai_enhance_gamma": config.ai_enhance_gamma,
+        "ai_enhance_threshold": config.ai_enhance_threshold,
+        "ai_enhance_gain": config.ai_enhance_gain,
+        "ai_enhance_sharpen": config.ai_enhance_sharpen,
+        "screen_color": config.screen_color,
+        "key_strength": config.key_strength,
+        "clip_black": config.clip_black,
+        "clip_white": config.clip_white,
+        "shrink_grow": config.shrink_grow,
+        "edge_blur": config.edge_blur,
+        "despill_enable": config.despill_enable,
+        "despill_strength": config.despill_strength,
+        "despill_color": config.despill_color,
+        "despeckle_enable": config.despeckle_enable,
+        "despeckle_radius": config.despeckle_radius,
+        "despeckle_threshold": config.despeckle_threshold,
+        "color_space": config.color_space,
+        "output_fg": config.output_fg,
+        "output_matte": config.output_matte,
+        "output_comp": config.output_comp,
+        "output_processed": config.output_processed,
+        "generate_zip_by_default": config.generate_zip_by_default,
+    }
+    return ProcessJobParams(
+        input_path=video_path,
+        output_dir=output_dir,
+        background_mode=config.background_mode,
+        quality_mode=config.quality_mode,
+        use_ai=config.use_ai,
+        ai_model=config.ai_model,
+        config_overrides=config_overrides,
+    )
+
+
+def _build_process_job(video_path, params):
+    return GPUJob(
+        job_type=JobType.PROCESS_MEDIA,
+        input_path=video_path,
+        params=params,
+    )
+
+
+def _queued_position(queue, job):
+    queued_jobs = list(queue.queued_snapshot)
+    try:
+        return queued_jobs.index(job) + 1
+    except ValueError:
+        return max(len(queued_jobs), 1)
+
+
+def _queued_status(queue, job):
+    return f"⏳ 已入队，第 {_queued_position(queue, job)} 位"
+
+
+QUEUE_TABLE_HEADERS = ["job_id", "type", "status", "progress", "input", "message"]
+
+
+def _format_job_progress(job):
+    if job.total <= 0:
+        return "-"
+    percentage = int((job.current / job.total) * 100) if job.total else 0
+    return f"{job.current}/{job.total} ({percentage}%)"
+
+
+def _format_queue_rows(queue):
+    rows = []
+    jobs = []
+    if queue.running_job is not None:
+        jobs.append(queue.running_job)
+    jobs.extend(queue.queued_snapshot)
+    jobs.extend(queue.history_snapshot)
+
+    for job in jobs:
+        message = job.error_message or (job.stage if job.status == JobStatus.RUNNING else "")
+        rows.append(
+            [
+                job.id[:8],
+                job.job_type.value,
+                job.status.value,
+                _format_job_progress(job),
+                Path(job.input_path).name,
+                message,
+            ]
+        )
+    return rows
+
+
+def get_queue_panel_value(queue_factory=None):
+    queue = (queue_factory or _default_queue_factory)()
+    return QUEUE_TABLE_HEADERS, _format_queue_rows(queue)
+
+
+def _queue_panel_rows_only(queue_factory=None):
+    _headers, rows = get_queue_panel_value(queue_factory=queue_factory)
+    return rows
+
+
+def _clear_terminal_history(queue):
+    return queue.clear_history()
+
+
+def _summarize_job_result(job):
+    result = job.result
+    frame_count = job.current or job.total
+    processing_time = 0.0
+
+    if result is not None:
+        frame_count = result.frame_count or frame_count
+        processing_time = result.processing_time
+
+    fps = (frame_count / processing_time) if processing_time > 0 else 0.0
+    return frame_count, processing_time, fps
+
+
+def cancel_current_job(queue_factory=None):
+    queue = (queue_factory or _default_queue_factory)()
+    running_job = queue.running_job
+    if running_job is None:
+        return "当前没有正在运行的任务"
+
+    queue.cancel_job(running_job.id)
+    return "⏹ 已请求取消当前任务"
+
+
+def cancel_current_job_with_panel(queue_factory=None):
+    status = cancel_current_job(queue_factory=queue_factory)
+    return status, _queue_panel_rows_only(queue_factory=queue_factory)
+
+
+def run_all_jobs(queue_factory=None, worker_factory=None, service_factory=None):
+    queue = (queue_factory or _default_queue_factory)()
+
+    if queue.running_job is not None:
+        headers, rows = get_queue_panel_value(queue_factory=lambda: queue)
+        return "⏳ 当前已有任务在运行", headers, rows
+
+    if queue.next_job() is None:
+        headers, rows = get_queue_panel_value(queue_factory=lambda: queue)
+        return "当前没有待运行任务", headers, rows
+
+    service = (service_factory or _default_service_factory)()
+    worker = (worker_factory or _default_worker_factory)(queue, service)
+    while queue.running_job is None and queue.next_job() is not None:
+        completed_job = worker.run_next_job()
+        if completed_job is None:
+            break
+
+    headers, rows = get_queue_panel_value(queue_factory=lambda: queue)
+    return "▶ 队列已全部运行完成", headers, rows
+
+
+def run_all_jobs_for_ui(queue_factory=None, worker_factory=None, service_factory=None):
+    status, _headers, rows = run_all_jobs(
+        queue_factory=queue_factory,
+        worker_factory=worker_factory,
+        service_factory=service_factory,
+    )
+    return status, rows
+
+
+def clear_completed_jobs(queue_factory=None):
+    queue = (queue_factory or _default_queue_factory)()
+    removed_count = _clear_terminal_history(queue)
+    headers, rows = get_queue_panel_value(queue_factory=lambda: queue)
+    if removed_count == 0:
+        return "当前没有可清理的完成任务", headers, rows
+    return f"🧹 已清空 {removed_count} 个完成任务", headers, rows
+
+
+def clear_completed_jobs_for_ui(queue_factory=None):
+    status, _headers, rows = clear_completed_jobs(queue_factory=queue_factory)
+    return status, rows
+
+
+class _GuiProgressService:
+    def __init__(self, base_service, gui_progress_callback):
+        self._base_service = base_service
+        self._gui_progress_callback = gui_progress_callback
+
+    def process(self, params, progress_callback=None, cancel_check=None):
+        def combined_progress(current, total, stage):
+            if progress_callback is not None:
+                progress_callback(current, total, stage)
+            self._gui_progress_callback(current, total, stage)
+
+        try:
+            return self._base_service.process(
+                params,
+                progress_callback=combined_progress,
+                cancel_check=cancel_check,
+            )
+        except Exception as exc:
+            if cancel_check is None or "unexpected keyword argument 'cancel_check'" not in str(exc):
+                raise
+            return self._base_service.process(
+                params,
+                progress_callback=combined_progress,
+            )
+
+
 def process_video(
     video_path,
     mode,
@@ -266,7 +500,10 @@ def process_video(
     ai_threshold,
     ai_gain,
     ai_sharpen,
-    progress=gr.Progress()
+    progress=gr.Progress(),
+    service_factory=None,
+    queue_factory=None,
+    worker_factory=None,
 ):
     """处理视频 - 带实时预览"""
     global _output_dir
@@ -390,17 +627,36 @@ def process_video(
     )
     
     try:
-        pipeline = MattingPipeline(config)
+        def on_progress(current, total, stage):
+            progress(current / total, desc=stage)
 
-        # 用于实时预览的变量
+        params = _build_process_job_params(video_path, _output_dir, config)
+        queue = (queue_factory or _default_queue_factory)()
+        job = queue.submit(_build_process_job(video_path, params))
+
+        if queue.running_job is not None and queue.running_job is not job:
+            return None, None, _queued_status(queue, job), None, None, 0, None
+
+        if job.status == JobStatus.RUNNING and queue.running_job is job:
+            return None, None, "⏳ 当前任务处理中", None, None, 0, None
+
+        if job.status == JobStatus.QUEUED:
+            service = (service_factory or _default_service_factory)()
+            worker = (worker_factory or _default_worker_factory)(queue, _GuiProgressService(service, on_progress))
+            request_job = job
+            while queue.running_job is None and queue.next_job() is not None:
+                completed_job = worker.run_next_job()
+                if completed_job is None:
+                    break
+            job = request_job
+
         preview_input = None
         preview_output = None
 
-        def on_progress(current, total, stage):
-            progress(current / total, desc=stage)
-            # 可以在这里更新预览,但 Gradio 的进度回调不支持 yield
-
-        result = pipeline.process(video_path, _output_dir, on_progress)
+        if job.status == JobStatus.FAILED:
+            raise RuntimeError(job.error_message or "processing failed")
+        if job.status == JobStatus.CANCELLED:
+            return None, None, "⏹ 已取消", None, None, 0, None
 
         # 打包序列帧为 ZIP
         zip_path = _output_dir / "frames.zip" if generate_zip else None
@@ -414,10 +670,10 @@ def process_video(
         # 生成首帧预览图
         input_preview, output_preview = _create_preview_frames(_output_dir)
         transparent_png = _find_transparent_png_download(_output_dir)
+        frame_count, processing_time, fps = _summarize_job_result(job)
 
         status = (
-            f"✅ 完成!{result['frames_processed']}帧 | {result['fps']:.1f} fps | "
-            f"耗时 {result['elapsed_time']:.1f}s{auto_summary}"
+            f"✅ 完成!{frame_count}帧 | {fps:.1f} fps | 耗时 {processing_time:.1f}s{auto_summary}"
         )
 
         # 返回预览视频和首帧对比图
@@ -447,9 +703,9 @@ def process_video(
 
         logger.info(
             "GUI processing completed: frames=%s elapsed=%.1fs fps=%.2f zip=%s png=%s preview=%s",
-            result["frames_processed"],
-            result["elapsed_time"],
-            result["fps"],
+            frame_count,
+            processing_time,
+            fps,
             zip_path,
             transparent_png,
             preview_video,
@@ -461,7 +717,7 @@ def process_video(
             status,
             input_preview,
             output_preview,
-            result['frames_processed'],
+            frame_count,
             str(transparent_png) if transparent_png else None,
         )
     except Exception as e:
@@ -970,6 +1226,9 @@ def create_ui():
                 with gr.Row():
                     preset_btn = gr.Button("↩ 恢复推荐参数", variant="secondary")
                     process_btn = gr.Button("🚀 开始处理", variant="primary", size="lg")
+                    run_all_btn = gr.Button("▶ 运行全部", variant="secondary")
+                    cancel_btn = gr.Button("⏹ 取消当前任务", variant="secondary")
+                    clear_completed_btn = gr.Button("🧹 清空完成任务", variant="secondary")
 
                 # 状态栏
                 status_text = gr.Textbox(
@@ -978,6 +1237,15 @@ def create_ui():
                     interactive=False,
                     lines=2
                 )
+
+                with gr.Group():
+                    gr.Markdown("### 队列面板")
+                    queue_table = gr.Dataframe(
+                        headers=QUEUE_TABLE_HEADERS,
+                        value=_queue_panel_rows_only(),
+                        interactive=False,
+                        wrap=True,
+                    )
 
             # 右侧:预览与输出面板
             with gr.Column(scale=2):
@@ -1153,6 +1421,24 @@ def create_ui():
                 frame_count,
                 transparent_png,
             ]
+        ).then(
+            fn=_queue_panel_rows_only,
+            outputs=[queue_table],
+        )
+
+        run_all_btn.click(
+            fn=run_all_jobs_for_ui,
+            outputs=[status_text, queue_table],
+        )
+
+        cancel_btn.click(
+            fn=cancel_current_job_with_panel,
+            outputs=[status_text, queue_table],
+        )
+
+        clear_completed_btn.click(
+            fn=clear_completed_jobs_for_ui,
+            outputs=[status_text, queue_table],
         )
 
         # 底部说明
