@@ -16,8 +16,6 @@ import torch
 
 from ..config import MattingConfig
 from ..errors import ModelLoadError
-from ..utils.model_checker import validate_direct_model_file
-from ..utils.model_downloads import download_file_atomically
 from ..utils.model_paths import model_file
 
 logger = logging.getLogger(__name__)
@@ -63,6 +61,8 @@ class MatAnyone2Matte:
     
     def _download_model(self):
         """下载 MatAnyone2 模型"""
+        import urllib.request
+        
         model_dir = self._get_model_path().parent
         model_dir.mkdir(parents=True, exist_ok=True)
         
@@ -73,11 +73,7 @@ class MatAnyone2Matte:
         logger.info("Downloading MatAnyone2 weights from %s", url)
         
         try:
-            download_file_atomically(
-                url,
-                model_path,
-                validate=lambda path: validate_direct_model_file(path, "matanyone2.pth"),
-            )
+            urllib.request.urlretrieve(url, model_path)
             logger.info("Saved MatAnyone2 weights to %s", model_path)
         except Exception as e:
             raise RuntimeError(f"MatAnyone2 download failed: {e}") from e

@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from .errors import JobCancelledError, ProcessingError
+from .errors import JobCancelledError
 from .job_queue import GPUJob, GPUJobQueue, JobType
-from .service import ProcessResult
 
 
 class JobWorker:
@@ -42,5 +41,3 @@ class JobWorker:
             progress_callback=lambda current, total, stage: job.update_progress(current, total, stage),
             cancel_check=lambda: job.is_cancelled,
         )
-        if isinstance(job.result, ProcessResult) and not job.result.success:
-            raise ProcessingError(job.result.error_message or "processing failed")

@@ -40,7 +40,6 @@ class GPUJob:
     id: str = field(default_factory=lambda: uuid4().hex)
     status: JobStatus = JobStatus.QUEUED
     error_message: Optional[str] = None
-    error: Exception | None = None
     current: int = 0
     total: int = 0
     stage: str = "queued"
@@ -155,7 +154,6 @@ class GPUJobQueue:
         with self._lock:
             job.status = JobStatus.FAILED
             job.error_message = str(error)
-            job.error = error if isinstance(error, Exception) else None
             job.stage = "failed"
             self._finish(job)
 
@@ -281,7 +279,6 @@ class GPUJobQueue:
             id=job.id,
             status=job.status,
             error_message=job.error_message,
-            error=job.error,
             current=job.current,
             total=job.total,
             stage=job.stage,
@@ -293,7 +290,6 @@ class GPUJobQueue:
     def _reset_job_for_submit(job: GPUJob) -> None:
         job.status = JobStatus.QUEUED
         job.error_message = None
-        job.error = None
         job.current = 0
         job.total = 0
         job.stage = "queued"

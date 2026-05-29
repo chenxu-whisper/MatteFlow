@@ -15,7 +15,6 @@ sys.path.insert(0, str(project_root / "src"))
 import argparse
 import inspect
 import logging
-import os
 import shutil
 import tempfile
 from threading import RLock
@@ -267,12 +266,8 @@ def _cleanup_expired_session_preview_artifacts(session_ids: list[str]) -> None:
 
 # 检查可用模型
 _model_checker = ModelChecker()
-if os.environ.get("MATTEFLOW_SKIP_UI_MODEL_PROBE") == "1":
-    _available_models = []
-    _ui_choices = [("📐 传统算法", "traditional")]
-else:
-    _available_models = _model_checker.get_available_models()
-    _ui_choices = _model_checker.get_ui_choices()
+_available_models = _model_checker.get_available_models()
+_ui_choices = _model_checker.get_ui_choices()
 
 
 def _configure_logging(debug: bool = False) -> None:

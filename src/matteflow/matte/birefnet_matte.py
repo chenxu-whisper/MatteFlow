@@ -4,9 +4,9 @@ import numpy as np
 import cv2
 import torch
 from typing import List
+from pathlib import Path
 
 from ..config import MattingConfig
-from ..utils.model_paths import models_root, resolve_snapshot_repo_dir
 
 
 class BiRefNetMatte:
@@ -24,25 +24,15 @@ class BiRefNetMatte:
             from transformers import AutoModelForImageSegmentation
             
             print("[BiRefNet] Loading model from HuggingFace...")
-            cache_dir = models_root()
-            local_path = resolve_snapshot_repo_dir(cache_dir, "ZhengPeng7/BiRefNet")
             
             # 尝试加载最新版本，指定 revision 避免兼容性问题
             try:
-                if local_path is not None:
-                    self.model = AutoModelForImageSegmentation.from_pretrained(
-                        str(local_path),
-                        trust_remote_code=True,
-                        torch_dtype=torch.float32
-                    )
-                else:
-                    self.model = AutoModelForImageSegmentation.from_pretrained(
-                        "ZhengPeng7/BiRefNet",
-                        trust_remote_code=True,
-                        revision="main",
-                        torch_dtype=torch.float32,
-                        cache_dir=cache_dir,
-                    )
+                self.model = AutoModelForImageSegmentation.from_pretrained(
+                    "ZhengPeng7/BiRefNet",
+                    trust_remote_code=True,
+                    revision="main",
+                    torch_dtype=torch.float32
+                )
             except Exception as e1:
                 print(f"[BiRefNet] Main revision failed: {e1}")
                 print("[BiRefNet] Trying legacy revision...")
@@ -51,8 +41,7 @@ class BiRefNetMatte:
                     "ZhengPeng7/BiRefNet",
                     trust_remote_code=True,
                     revision="v1.0",
-                    torch_dtype=torch.float32,
-                    cache_dir=cache_dir,
+                    torch_dtype=torch.float32
                 )
             
             self.model.eval().to(self.device)
