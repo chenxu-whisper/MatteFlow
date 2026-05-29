@@ -1,62 +1,46 @@
-# MatteFlow - 视频 / 图片 / 序列帧抠图工具
+# MatteFlow
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-MatteFlow 是一个高质量抠图工具，支持视频、图片和序列帧输入，适用于绿幕 / 黑底透明化处理，并集成多种 AI 和传统算法。
+MatteFlow 是一个面向视频、图片和序列帧的抠图工具，支持绿幕、黑底透明化、多种 AI 模型与传统算法，并提供命令行与 Web GUI 两种使用方式。
 
-## ✨ 特性
+## 特性
 
-- 🏆 **CorridorKey** - 物理分离算法，绿幕最佳效果
-- 🎬 **BackgroundMattingV2** - 已知背景时效果最优
-- 🤖 **AI 增强** - 传统 + AI 边缘细化
-- 📐 **传统算法** - 快速色度键抠图
-- 🎨 **Web UI** - 浏览器界面，实时预览
-- 📦 **多输入支持** - 支持视频、图片、序列帧处理与导出
+- 支持视频、单图和序列帧输入
+- 支持绿幕、黑底和自动背景模式
+- 集成传统算法与多种 AI 抠图后端
+- 提供 Web GUI 预览、队列处理和导出能力
+- 提供命令行入口，适合批处理与自动化场景
 
-## 🚀 快速开始
+## 快速开始
 
 ### 安装
 
 ```bash
-# 1. 克隆仓库（首次）
-git clone <仓库地址>
+git clone https://github.com/chenxu-whisper/MatteFlow.git
 cd MatteFlow
 
-# 2. 创建虚拟环境并安装依赖
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-
-# 3. 下载模型
-python scripts/download_models.py --all
-
-# 4. 启动 Web UI
-python scripts/web_gui.py
-
-# 5. 命令行处理示例
-python -m matteflow --input assets/frame/test_frame_1.png --output ./output/image --mode green
-python -m matteflow --input assets/video/test_green_2.mp4 --output ./output/video --mode green
-python -m matteflow --input ./frames --output ./output/sequence --mode auto
 ```
 
-示例测试资源位于 `assets/frame/` 与 `assets/video/`，也支持直接传入序列帧目录。
+### 下载模型
 
-### 启动 Web UI
+```bash
+python scripts/download_models.py --all
+```
+
+### 启动 Web GUI
 
 ```bash
 python scripts/web_gui.py
 ```
 
-访问 http://localhost:7860
+启动后访问 `http://localhost:7860`。
 
-### 模型与运行时
-
-- 模型权重默认位于项目根目录的 `models/`
-- 已 vendored 的运行时代码位于 `src/matteflow/vendor/`
-- 主工作区当前已切换 vendored 的入口优先包含 `GVM`
-
-### 命令行使用
+### 命令行处理
 
 ```bash
 # 单图
@@ -69,67 +53,78 @@ python -m matteflow --input assets/video/test_green_2.mp4 --output ./output/vide
 python -m matteflow --input ./frames --output ./output/sequence --mode auto
 ```
 
-## 📖 使用指南
+### 预览缓存清理验证
 
-### 推荐参数组合
-
-| 场景 | 背景模式 | 算法 | 参数 |
-|------|----------|------|------|
-| 纯色绿幕 | 绿幕 | CorridorKey | 默认 |
-| 绿幕+白色物体 | 绿幕 | CorridorKey | 白色保护调高 |
-| 有背景图 | 绿幕 | BackgroundMattingV2 | 上传背景图 |
-| 黑底特效 | 黑底 | 传统算法 | 辉光保留 0.9 |
-| 黑底粒子 | 黑底 | 传统算法 | 粒子增强 0.7 |
-
-## 🏗️ 项目结构
-
+```bash
+python -m matteflow verify-preview-cleanup
 ```
+
+这个子命令会构造一组本地临时数据，验证 Gradio 预览缓存与 `downloads/` 目录的纯时间驱动清理逻辑是否按预期生效。
+
+## 模型与运行时
+
+- 模型权重默认位于项目根目录的 `models/`
+- 已 vendored 的第三方运行时代码位于 `src/matteflow/vendor/`
+- 示例输入资源位于 `assets/frame/` 与 `assets/video/`
+
+## 项目结构
+
+```text
 MatteFlow/
-├── src/matteflow/          # 核心代码
-│   ├── config.py           # 配置
-│   ├── pipeline.py         # 处理流程
-│   ├── input/              # 输入解码
-│   ├── analysis/           # 背景分析
-│   ├── matte/              # 抠图算法
-│   │   ├── green_screen_matte.py
-│   │   ├── black_background_matte.py
-│   │   ├── corridorkey_matte.py
-│   │   ├── bgm2_matte.py
-│   │   ├── rvm_matte.py
-│   │   ├── birefnet_matte.py
-│   │   └── rembg_matte.py
-│   ├── refine/             # 边缘细化
-│   ├── temporal/           # 时序稳定
-│   ├── utils/              # 工具与模型检查
-│   └── vendor/             # 内聚的第三方运行时代码
-├── assets/                 # 示例图片与测试视频
-├── scripts/                # 脚本
-│   └── web_gui.py          # Web 界面
-├── tests/                  # 测试
-├── docs/                   # 文档
-├── requirements.txt        # 依赖
-└── README.md              # 说明
+├── assets/                 # 示例图片与视频
+├── scripts/                # 辅助脚本
+├── src/matteflow/          # 核心实现与 CLI
+│   ├── analysis/           # 背景分析与自动模式辅助判断
+│   ├── input/              # 视频 / 图片 / 序列帧输入识别与解码
+│   ├── matte/              # 传统算法、多种 AI 抠图后端与融合调度
+│   ├── output/             # RGBA、序列帧、预览等结果编码与导出
+│   ├── refine/             # 边缘细化、去溢色、去噪点等后处理
+│   ├── temporal/           # 视频时序稳定，降低 Alpha 闪烁与抖动
+│   ├── utils/              # 模型检查、模型下载、路径与兼容工具
+│   ├── vendor/             # vendored 第三方运行时代码与包装层
+│   ├── config.py           # 质量模式、背景模式与运行参数定义
+│   ├── pipeline.py         # 主处理流水线，串联解码、抠图、后处理与导出
+│   ├── service.py          # 面向 GUI / 队列的任务化服务封装
+│   ├── job_queue.py        # GUI 任务排队、状态管理与历史记录
+│   ├── job_worker.py       # 队列任务执行器与串行消费逻辑
+│   ├── diagnostics.py      # 统一诊断报告与错误分类
+│   ├── errors.py           # 自定义异常类型定义
+│   ├── cli_app.py          # argparse CLI 主实现与子命令分发
+│   ├── verify_preview_cleanup.py  # 预览缓存清理验证子命令
+│   └── __main__.py         # `python -m matteflow` 入口
+├── tests/core/             # 核心链路测试
+├── tests/web_gui/          # Web GUI 测试
+├── pyproject.toml          # 项目配置
+├── requirements.txt        # 依赖清单
+└── README.md
 ```
 
-## 🛠️ 开发
+## 开发
 
 ### 运行测试
 
 ```bash
-pytest tests/
+pytest tests
+```
+
+也可以分别运行：
+
+```bash
+pytest tests/core
+pytest tests/web_gui
 ```
 
 ### 添加新算法
 
-1. 在 `src/matteflow/matte/` 创建新文件
-2. 继承基类，实现 `generate()` 方法
-3. 在 `hybrid_matte.py` 注册
+1. 在 `src/matteflow/matte/` 中新增实现文件
+2. 按现有接口接入配置与推理逻辑
+3. 在组合调度层中注册并补对应测试
 
-## 📄 许可证
+## 许可证
 
 MIT License
 
-## 🙏 致谢
+## 致谢
 
 - [CorridorKey](https://github.com/nikopueringer/CorridorKey) by Corridor Digital
 - [BackgroundMattingV2](https://github.com/PeterL1n/BackgroundMattingV2)

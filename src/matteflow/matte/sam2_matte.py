@@ -8,13 +8,41 @@ Meta 的 SAM2 视频分割模型，支持视频跟踪和分割
 - 来源: https://github.com/facebookresearch/segment-anything-2
 """
 
+import json
 import numpy as np
 import torch
 from typing import List, Optional, Tuple
 from pathlib import Path
 
 from ..config import MattingConfig
-from ..utils.model_paths import models_root
+from ..errors import JobCancelledError
+from ..utils.model_downloads import download_file_atomically
+from ..utils.model_paths import models_root, resolve_snapshot_repo_dir
+
+
+SAM2_DIRECT_WEIGHT_MIN_BYTES = 50 * 1024 * 1024
+
+
+def _validate_sam2_direct_weight(path: Path) -> tuple[bool, str | None]:
+    if not path.exists():
+        return False, "需要手动下载"
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False, "权重文件损坏或下载不完整"
+    if size < SAM2_DIRECT_WEIGHT_MIN_BYTES:
+        return False, "权重文件损坏或下载不完整"
+    return True, None
+
+
+def _validate_sam2_config(path: Path) -> tuple[bool, str | None]:
+    if not path.exists():
+        return False, "需要手动下载"
+    try:
+        json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False, "权重文件损坏或下载不完整"
+    return True, None
 
 
 class SAM2Matte:
@@ -33,18 +61,18 @@ class SAM2Matte:
             print("[SAM2] Loading model...")
 
             cache_dir = models_root()
-            model_id = "sam2"  # 改为本地目录名
+            repo_id = "facebook/sam2-hiera-base-plus"
             
             # 检查本地缓存
-            local_path = cache_dir / "models--facebook--sam2.1-hiera-base-plus"
-            if local_path.exists():
+            local_path = resolve_snapshot_repo_dir(cache_dir, repo_id)
+            if local_path is not None:
                 print(f"[SAM2] Found local model at {local_path}")
             
             # 尝试使用 transformers 加载
             try:
                 from transformers import AutoModel
                 self.model = AutoModel.from_pretrained(
-                    model_id,
+                    str(local_path) if local_path is not None else repo_id,
                     cache_dir=cache_dir,
                     trust_remote_code=True
                 )
@@ -76,26 +104,35 @@ class SAM2Matte:
     
     def _download_model(self):
         """下载 SAM2 模型"""
-        import urllib.request
-        
-        model_dir = models_root() / "sam2"
+        model_dir = models_root() / "sam2-hiera-base-plus"
         model_dir.mkdir(parents=True, exist_ok=True)
-        
-        model_path = model_dir / "sam2_hiera_base_plus.pt"
-        
-        # HuggingFace 模型链接
-        url = "https://huggingface.co/facebook/sam2-hiera-base-plus/resolve/main/sam2_hiera_base_plus.pt"
-        
-        print(f"[SAM2] Downloading from {url}")
-        print("[SAM2] This may take a few minutes...")
-        
+
         try:
-            urllib.request.urlretrieve(url, model_path)
-            print(f"[SAM2] Saved to {model_path}")
+            from huggingface_hub import snapshot_download
+
+            print("[SAM2] Downloading facebook/sam2-hiera-base-plus into local repo dir...")
+            print("[SAM2] This may take a few minutes...")
+            snapshot_download(
+                repo_id="facebook/sam2-hiera-base-plus",
+                local_dir=model_dir,
+            )
+            print(f"[SAM2] Saved to {model_dir}")
         except Exception as e:
-            print(f"[SAM2] Download failed: {e}")
-            print("[SAM2] Please download manually from:")
-            print("  https://huggingface.co/facebook/sam2-hiera-base-plus")
+            print(f"[SAM2] snapshot download failed: {e}")
+            print("[SAM2] Falling back to direct weight download...")
+            try:
+                config_path = model_dir / "config.json"
+                model_path = model_dir / "sam2_hiera_base_plus.pt"
+                config_url = "https://huggingface.co/facebook/sam2-hiera-base-plus/resolve/main/config.json"
+                url = "https://huggingface.co/facebook/sam2-hiera-base-plus/resolve/main/sam2_hiera_base_plus.pt"
+                download_file_atomically(config_url, config_path, validate=_validate_sam2_config)
+                download_file_atomically(url, model_path, validate=_validate_sam2_direct_weight)
+                print(f"[SAM2] Saved repo metadata to {config_path}")
+                print(f"[SAM2] Saved to {model_path}")
+            except Exception as download_error:
+                print(f"[SAM2] Download failed: {download_error}")
+                print("[SAM2] Please download manually from:")
+                print("  https://huggingface.co/facebook/sam2-hiera-base-plus")
     
     def generate_mask(self, frame: np.ndarray, points: Optional[List[Tuple[int, int]]] = None,
                      labels: Optional[List[int]] = None) -> np.ndarray:
@@ -171,7 +208,7 @@ class SAM2Matte:
         
         return (mask > 0.5).astype(np.uint8)
     
-    def track_video(self, frames: List[np.ndarray], init_mask: np.ndarray) -> List[np.ndarray]:
+    def track_video(self, frames: List[np.ndarray], init_mask: np.ndarray, cancel_check=None) -> List[np.ndarray]:
         """
         视频跟踪分割
         
@@ -191,6 +228,8 @@ class SAM2Matte:
             
             # 初始化视频状态
             for i, frame in enumerate(frames):
+                if cancel_check is not None and cancel_check():
+                    raise JobCancelledError("SAM2 tracking cancelled by user")
                 if i == 0:
                     # 首帧使用 init_mask
                     self.predictor.init_state(frame)
@@ -202,7 +241,8 @@ class SAM2Matte:
                 masks.append(mask)
             
             return masks
-            
+        except JobCancelledError:
+            raise
         except Exception as e:
             print(f"[SAM2] Tracking failed: {e}")
             return [init_mask] * len(frames)
@@ -214,10 +254,11 @@ class SAM2Matte:
         frame_tensor = frame_tensor.to(self.device)
         return frame_tensor
     
-    def generate_sequence(self, frames: List[np.ndarray]) -> List[np.ndarray]:
+    def generate_sequence(self, frames: List[np.ndarray], progress_callback=None, cancel_check=None) -> List[np.ndarray]:
         """序列处理 - 返回 masks"""
+        del progress_callback
         # 首帧自动生成 mask
         first_mask = self.generate_mask(frames[0])
         
         # 跟踪视频
-        return self.track_video(frames, first_mask)
+        return self.track_video(frames, first_mask, cancel_check=cancel_check)

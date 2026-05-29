@@ -12,6 +12,9 @@ import importlib
 from typing import List, Optional
 
 from ..config import MattingConfig
+from ..errors import ModelLoadError
+from ..utils.model_checker import validate_direct_model_file
+from ..utils.model_downloads import download_file_atomically
 from ..utils.model_paths import model_file, models_root
 
 logger = logging.getLogger(__name__)
@@ -60,8 +63,6 @@ class CorridorKeyMatte:
     
     def _download_model(self):
         """下载 CorridorKey 模型 (383MB)"""
-        import urllib.request
-        
         model_dir = models_root()
         model_dir.mkdir(parents=True, exist_ok=True)
         
@@ -71,7 +72,11 @@ class CorridorKeyMatte:
         
         logger.info("Downloading CorridorKey weights from %s", url)
         try:
-            urllib.request.urlretrieve(url, model_path)
+            download_file_atomically(
+                url,
+                model_path,
+                validate=lambda path: validate_direct_model_file(path, "corridorkey.pth"),
+            )
             logger.info("Saved CorridorKey weights to %s", model_path)
         except Exception as e:
             raise RuntimeError(f"CorridorKey download failed: {e}") from e
@@ -87,9 +92,8 @@ class CorridorKeyMatte:
             alpha: Alpha 通道 (H, W), float32 [0, 1]
         """
         if self.model is None:
-            logger.info("Model unavailable, falling back to GreenScreenMatte")
-            from .green_screen_matte import GreenScreenMatte
-            return GreenScreenMatte(self.config).generate(frame)
+            logger.info("Model unavailable")
+            raise ModelLoadError("CorridorKey model is not loaded")
         
         # 直接使用 EZ-CorridorKey 的 process_frame 方法
         try:
@@ -117,11 +121,9 @@ class CorridorKeyMatte:
             
             return alpha
             
-        except Exception as e:
+        except Exception as exc:
             logger.exception("CorridorKey process_frame failed")
-            # 回退到传统算法
-            from .green_screen_matte import GreenScreenMatte
-            return GreenScreenMatte(self.config).generate(frame)
+            raise RuntimeError("CorridorKey inference failed") from exc
 
     def _extract_alpha_array(self, result) -> np.ndarray:
         """Extract alpha output and normalize it to a 2D float32 numpy array."""

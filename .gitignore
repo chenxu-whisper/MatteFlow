@@ -40,6 +40,7 @@ env/
 htmlcov/
 .cache/
 .worktrees/
+docs/superpowers/
 
 # IDE and editor files
 .idea/

@@ -13,9 +13,15 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
 import argparse
+import inspect
 import logging
+import os
+import shutil
 import tempfile
+from threading import RLock
+import time
 import zipfile
+from uuid import uuid4
 import cv2
 import numpy as np
 import gradio as gr
@@ -31,6 +37,7 @@ from matteflow.diagnostics import (
     merge_reports,
 )
 from matteflow.ffmpeg_env import discover_media_tools
+from matteflow.input import ImageDecoder, InputKind, SequenceDecoder, detect_input_kind
 from matteflow.input.formats import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from matteflow.job_queue import GPUJob, GPUJobQueue, JobStatus, JobType
 from matteflow.job_worker import JobWorker
@@ -43,7 +50,13 @@ from matteflow.utils.output_paths import (
 )
 
 logger = logging.getLogger(__name__)
+GRADIO_PREVIEW_MAX_AGE_SECONDS = 3600
+SESSION_REGISTRY_MAX_AGE_SECONDS = 3600
 SUPPORTED_UPLOAD_EXTENSIONS = sorted(VIDEO_EXTENSIONS | IMAGE_EXTENSIONS)
+PREVIEW_OUTPUT_EXTENSIONS = IMAGE_EXTENSIONS | {".tga"}
+GUI_INPUT_PATH_NOT_ALLOWED_MESSAGE = "请通过上传组件选择素材，禁止直接引用服务器本地路径"
+GUI_INPUT_PATH_MISSING_MESSAGE = "输入素材不存在"
+PREVIEW_FAST_FRAME_LIMIT = 60
 GUI_DEFAULTS = {
     "mode": "green",
     "quality": "standard",
@@ -137,12 +150,129 @@ RECOMMENDED_PRESET_OUTPUT_KEYS = [
 # 全局状态
 _output_dir = None
 _current_preview_index = 0
-_gui_job_queue = GPUJobQueue()
+
+
+class _SessionQueueRegistry:
+    def __init__(self) -> None:
+        self._queues: dict[str, GPUJobQueue] = {}
+        self._last_seen: dict[str, float] = {}
+        self._lock = RLock()
+
+    def _prune_stale(self, now: float) -> list[str]:
+        stale_before = now - SESSION_REGISTRY_MAX_AGE_SECONDS
+        pruned_session_ids: list[str] = []
+        for session_id, last_seen in list(self._last_seen.items()):
+            if last_seen > stale_before:
+                continue
+            queue = self._queues.get(session_id)
+            if queue is None:
+                self._last_seen.pop(session_id, None)
+                continue
+            if queue.running_job is not None or queue.queued_snapshot:
+                continue
+            self._queues.pop(session_id, None)
+            self._last_seen.pop(session_id, None)
+            pruned_session_ids.append(session_id)
+        return pruned_session_ids
+
+    def get_queue(self, session_id: str) -> GPUJobQueue:
+        with self._lock:
+            now = time.time()
+            pruned_session_ids = self._prune_stale(now)
+            queue = self._queues.get(session_id)
+            if queue is None:
+                queue = GPUJobQueue()
+                self._queues[session_id] = queue
+            self._last_seen[session_id] = now
+        _cleanup_expired_session_preview_artifacts(pruned_session_ids)
+        return queue
+
+
+_session_queue_registry = _SessionQueueRegistry()
+
+
+class _SessionUploadRegistry:
+    def __init__(self) -> None:
+        self._paths: dict[str, set[Path]] = {}
+        self._last_seen: dict[str, float] = {}
+        self._lock = RLock()
+
+    def _prune_stale(self, now: float) -> list[str]:
+        stale_before = now - SESSION_REGISTRY_MAX_AGE_SECONDS
+        pruned_session_ids: list[str] = []
+        for session_id, last_seen in list(self._last_seen.items()):
+            if last_seen > stale_before:
+                continue
+            self._paths.pop(session_id, None)
+            self._last_seen.pop(session_id, None)
+            pruned_session_ids.append(session_id)
+        return pruned_session_ids
+
+    def register_path(self, session_id: str, path: Path) -> None:
+        resolved_path = path.resolve(strict=False)
+        with self._lock:
+            now = time.time()
+            pruned_session_ids = self._prune_stale(now)
+            self._paths.setdefault(session_id, set()).add(resolved_path)
+            self._last_seen[session_id] = now
+        _cleanup_expired_session_preview_artifacts(pruned_session_ids)
+
+    def is_registered(self, session_id: str, path: Path) -> bool:
+        resolved_path = path.resolve(strict=False)
+        with self._lock:
+            now = time.time()
+            pruned_session_ids = self._prune_stale(now)
+            is_allowed = resolved_path in self._paths.get(session_id, set())
+            if is_allowed:
+                self._last_seen[session_id] = now
+        _cleanup_expired_session_preview_artifacts(pruned_session_ids)
+        return is_allowed
+
+
+class _SessionPreviewArtifactRegistry:
+    def __init__(self) -> None:
+        self._paths: dict[str, set[Path]] = {}
+        self._lock = RLock()
+
+    def register_path(self, session_id: str | None, path: Path) -> None:
+        if session_id is None:
+            return
+        resolved_path = path.resolve(strict=False)
+        with self._lock:
+            self._paths.setdefault(session_id, set()).add(resolved_path)
+
+    def prune_session(self, session_id: str) -> None:
+        with self._lock:
+            paths = list(self._paths.pop(session_id, set()))
+
+        for path in paths:
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+            except FileNotFoundError:
+                continue
+            except Exception:
+                logger.warning("Failed to remove stale session preview artifact: %s", path, exc_info=True)
+
+
+_session_upload_registry = _SessionUploadRegistry()
+_session_preview_artifact_registry = _SessionPreviewArtifactRegistry()
+
+
+def _cleanup_expired_session_preview_artifacts(session_ids: list[str]) -> None:
+    for session_id in session_ids:
+        _session_preview_artifact_registry.prune_session(session_id)
 
 # 检查可用模型
 _model_checker = ModelChecker()
-_available_models = _model_checker.get_available_models()
-_ui_choices = _model_checker.get_ui_choices()
+if os.environ.get("MATTEFLOW_SKIP_UI_MODEL_PROBE") == "1":
+    _available_models = []
+    _ui_choices = [("📐 传统算法", "traditional")]
+else:
+    _available_models = _model_checker.get_available_models()
+    _ui_choices = _model_checker.get_ui_choices()
 
 
 def _configure_logging(debug: bool = False) -> None:
@@ -157,30 +287,155 @@ def _sanitize_output_name(name: str) -> str:
     return sanitize_output_name(name)
 
 
-def _resolve_gui_output_dir(video_path, output_root: Path | None = None) -> Path:
+def _resolve_gui_output_dir(
+    video_path,
+    output_root: Path | None = None,
+    job_token: str | None = None,
+) -> Path:
     return resolve_project_output_dir(
         Path(video_path),
         project_root=project_root,
         output_root=output_root,
+        job_token=job_token,
     )
 
 
-def _create_upload_preview(file_path):
+def _resolve_request_output_dir(video_path, request_token: str) -> Path:
+    resolver = _resolve_gui_output_dir
+    try:
+        signature = inspect.signature(resolver)
+    except (TypeError, ValueError):
+        return resolver(video_path, job_token=request_token)
+
+    if "job_token" in signature.parameters:
+        return resolver(video_path, job_token=request_token)
+    return resolver(video_path)
+
+
+def _gradio_preview_root() -> Path:
+    root = Path(tempfile.gettempdir()) / "gradio" / "matteflow_previews"
+    root.mkdir(parents=True, exist_ok=True)
+    _prune_stale_gradio_preview_artifacts(root)
+    return root
+
+
+def _is_within_root(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _validate_gui_input_path(file_path, session_id: str | None = None, require_registered: bool = False) -> Path:
+    path = Path(file_path)
+    resolved_path = path.resolve(strict=False)
+    allowed_roots = (
+        Path(tempfile.gettempdir()).resolve(),
+        _gradio_preview_root().resolve(),
+    )
+    if not any(_is_within_root(resolved_path, root) for root in allowed_roots):
+        raise ValueError(GUI_INPUT_PATH_NOT_ALLOWED_MESSAGE)
+    if require_registered and session_id is not None:
+        if not _session_upload_registry.is_registered(session_id, resolved_path):
+            raise ValueError(GUI_INPUT_PATH_NOT_ALLOWED_MESSAGE)
+    return path
+
+
+def _register_gui_upload_path(file_path, session_id: str | None = None) -> None:
+    if not file_path or session_id is None:
+        return
+    _session_upload_registry.register_path(session_id, Path(file_path))
+
+
+def _is_stale_preview_artifact(path: Path, now: float) -> bool:
+    try:
+        age_seconds = now - path.stat().st_mtime
+    except FileNotFoundError:
+        return False
+    return age_seconds > GRADIO_PREVIEW_MAX_AGE_SECONDS
+
+
+def _prune_stale_preview_cache_dirs(cache_root: Path, active_job_id: str | None = None) -> None:
+    if not cache_root.exists():
+        return
+    now = time.time()
+    for candidate in cache_root.iterdir():
+        if candidate.name == "downloads" or not candidate.is_dir():
+            continue
+        if active_job_id is not None and candidate.name == active_job_id:
+            continue
+        if not _is_stale_preview_artifact(candidate, now):
+            continue
+        try:
+            shutil.rmtree(candidate)
+        except FileNotFoundError:
+            continue
+        except Exception:
+            logger.warning("Failed to remove stale Gradio preview cache: %s", candidate, exc_info=True)
+
+
+def _prune_stale_preview_downloads(cache_root: Path) -> None:
+    downloads_dir = cache_root / "downloads"
+    if not downloads_dir.exists():
+        return
+    now = time.time()
+    for candidate in downloads_dir.iterdir():
+        if candidate.is_dir():
+            continue
+        if not _is_stale_preview_artifact(candidate, now):
+            continue
+        try:
+            candidate.unlink()
+        except FileNotFoundError:
+            continue
+        except Exception:
+            logger.warning("Failed to remove stale preview download: %s", candidate, exc_info=True)
+
+
+def _prune_stale_gradio_preview_artifacts(cache_root: Path, active_job_id: str | None = None) -> None:
+    _prune_stale_preview_cache_dirs(cache_root, active_job_id=active_job_id)
+    _prune_stale_preview_downloads(cache_root)
+
+
+def _copy_preview_into_gradio_cache(
+    job: GPUJob,
+    preview_path: Path,
+    job_output_dir: Path,
+    session_id: str | None = None,
+) -> str:
+    cache_root = _gradio_preview_root()
+    _prune_stale_gradio_preview_artifacts(cache_root, active_job_id=job.id)
+    job_cache_dir = cache_root / job.id
+    job_cache_dir.mkdir(parents=True, exist_ok=True)
+    _session_preview_artifact_registry.register_path(session_id, job_cache_dir)
+    preview_name = f"preview_{job_output_dir.name}.mp4"
+    gradio_preview_path = job_cache_dir / preview_name
+    shutil.copy2(str(preview_path), str(gradio_preview_path))
+    return str(gradio_preview_path.resolve())
+
+
+def _create_upload_preview(file_path, session_id=None):
     hide_image = gr.update(value=None, visible=False)
     hide_video = gr.update(value=None, visible=False)
     if not file_path:
         return hide_image, hide_video, "未选择素材"
 
-    path = Path(file_path)
+    try:
+        path = _validate_gui_input_path(file_path)
+    except ValueError as exc:
+        return hide_image, hide_video, str(exc)
     suffix = path.suffix.lower()
     if suffix in IMAGE_EXTENSIONS:
         if not path.exists():
             return hide_image, hide_video, f"图片文件不存在: {path.name}"
+        _register_gui_upload_path(path, session_id=session_id)
         return gr.update(value=str(path), visible=True), hide_video, f"已选择图片: {path.name}"
 
     if suffix in VIDEO_EXTENSIONS:
         if not path.exists():
             return hide_image, hide_video, f"视频文件不存在: {path.name}"
+        _register_gui_upload_path(path, session_id=session_id)
         return hide_image, gr.update(value=str(path), visible=True), f"已选择视频: {path.name}"
 
     return hide_image, hide_video, f"不支持的素材格式: {path.suffix}"
@@ -238,8 +493,25 @@ def _default_service_factory():
     return MatteFlowService(pipeline_factory=MattingPipeline)
 
 
-def _default_queue_factory():
-    return _gui_job_queue
+def _new_session_id() -> str:
+    return uuid4().hex
+
+
+def _default_queue_factory(session_id: str | None = None):
+    return _session_queue_registry.get_queue(session_id or _new_session_id())
+
+
+def _resolve_queue(queue_factory=None, session_id: str | None = None):
+    factory = queue_factory or _default_queue_factory
+    if queue_factory is None:
+        return factory(session_id)
+    try:
+        return factory(session_id=session_id)
+    except TypeError:
+        try:
+            return factory(session_id)
+        except TypeError:
+            return factory()
 
 
 def _default_worker_factory(queue, service):
@@ -311,6 +583,7 @@ def _build_process_job_params(video_path, output_dir, config):
         "output_comp": config.output_comp,
         "output_processed": config.output_processed,
         "generate_zip_by_default": config.generate_zip_by_default,
+        "preview_quality_mode": config.preview_quality_mode,
     }
     return ProcessJobParams(
         input_path=video_path,
@@ -323,11 +596,12 @@ def _build_process_job_params(video_path, output_dir, config):
     )
 
 
-def _build_process_job(video_path, params):
+def _build_process_job(video_path, params, job_id: str | None = None):
     return GPUJob(
         job_type=JobType.PROCESS_MEDIA,
         input_path=video_path,
         params=params,
+        id=job_id or uuid4().hex,
     )
 
 
@@ -376,13 +650,13 @@ def _format_queue_rows(queue):
     return rows
 
 
-def get_queue_panel_value(queue_factory=None):
-    queue = (queue_factory or _default_queue_factory)()
+def get_queue_panel_value(session_id=None, queue_factory=None):
+    queue = _resolve_queue(queue_factory=queue_factory, session_id=session_id)
     return QUEUE_TABLE_HEADERS, _format_queue_rows(queue)
 
 
-def _queue_panel_rows_only(queue_factory=None):
-    _headers, rows = get_queue_panel_value(queue_factory=queue_factory)
+def _queue_panel_rows_only(session_id=None, queue_factory=None):
+    _headers, rows = get_queue_panel_value(session_id=session_id, queue_factory=queue_factory)
     return rows
 
 
@@ -403,8 +677,8 @@ def _summarize_job_result(job):
     return frame_count, processing_time, fps
 
 
-def cancel_current_job(queue_factory=None):
-    queue = (queue_factory or _default_queue_factory)()
+def cancel_current_job(session_id=None, queue_factory=None):
+    queue = _resolve_queue(queue_factory=queue_factory, session_id=session_id)
     running_job = queue.running_job
     if running_job is None:
         return "当前没有正在运行的任务"
@@ -413,20 +687,20 @@ def cancel_current_job(queue_factory=None):
     return "⏹ 已请求取消当前任务"
 
 
-def cancel_current_job_with_panel(queue_factory=None):
-    status = cancel_current_job(queue_factory=queue_factory)
-    return status, _queue_panel_rows_only(queue_factory=queue_factory)
+def cancel_current_job_with_panel(session_id=None, queue_factory=None):
+    status = cancel_current_job(session_id=session_id, queue_factory=queue_factory)
+    return status, _queue_panel_rows_only(session_id=session_id, queue_factory=queue_factory)
 
 
-def run_all_jobs(queue_factory=None, worker_factory=None, service_factory=None):
-    queue = (queue_factory or _default_queue_factory)()
+def run_all_jobs(session_id=None, queue_factory=None, worker_factory=None, service_factory=None):
+    queue = _resolve_queue(queue_factory=queue_factory, session_id=session_id)
 
     if queue.running_job is not None:
-        headers, rows = get_queue_panel_value(queue_factory=lambda: queue)
+        headers, rows = get_queue_panel_value(session_id=session_id, queue_factory=lambda: queue)
         return "⏳ 当前已有任务在运行", headers, rows
 
     if queue.next_job() is None:
-        headers, rows = get_queue_panel_value(queue_factory=lambda: queue)
+        headers, rows = get_queue_panel_value(session_id=session_id, queue_factory=lambda: queue)
         return "当前没有待运行任务", headers, rows
 
     service = (service_factory or _default_service_factory)()
@@ -436,12 +710,13 @@ def run_all_jobs(queue_factory=None, worker_factory=None, service_factory=None):
         if completed_job is None:
             break
 
-    headers, rows = get_queue_panel_value(queue_factory=lambda: queue)
+    headers, rows = get_queue_panel_value(session_id=session_id, queue_factory=lambda: queue)
     return "▶ 队列已全部运行完成", headers, rows
 
 
-def run_all_jobs_for_ui(queue_factory=None, worker_factory=None, service_factory=None):
+def run_all_jobs_for_ui(session_id=None, queue_factory=None, worker_factory=None, service_factory=None):
     status, _headers, rows = run_all_jobs(
+        session_id=session_id,
         queue_factory=queue_factory,
         worker_factory=worker_factory,
         service_factory=service_factory,
@@ -449,17 +724,17 @@ def run_all_jobs_for_ui(queue_factory=None, worker_factory=None, service_factory
     return status, rows
 
 
-def clear_completed_jobs(queue_factory=None):
-    queue = (queue_factory or _default_queue_factory)()
+def clear_completed_jobs(session_id=None, queue_factory=None):
+    queue = _resolve_queue(queue_factory=queue_factory, session_id=session_id)
     removed_count = _clear_terminal_history(queue)
-    headers, rows = get_queue_panel_value(queue_factory=lambda: queue)
+    headers, rows = get_queue_panel_value(session_id=session_id, queue_factory=lambda: queue)
     if removed_count == 0:
         return "当前没有可清理的完成任务", headers, rows
     return f"🧹 已清空 {removed_count} 个完成任务", headers, rows
 
 
-def clear_completed_jobs_for_ui(queue_factory=None):
-    status, _headers, rows = clear_completed_jobs(queue_factory=queue_factory)
+def clear_completed_jobs_for_ui(session_id=None, queue_factory=None):
+    status, _headers, rows = clear_completed_jobs(session_id=session_id, queue_factory=queue_factory)
     return status, rows
 
 
@@ -533,16 +808,26 @@ def process_video(
     ai_threshold,
     ai_gain,
     ai_sharpen,
+    session_id=None,
     progress=gr.Progress(),
     service_factory=None,
     queue_factory=None,
     worker_factory=None,
 ):
     """处理视频 - 带实时预览"""
-    global _output_dir
-
     if video_path is None:
         return None, None, "请先上传视频", None, None, 0, None
+    try:
+        validated_video_path = _validate_gui_input_path(
+            video_path,
+            session_id=session_id,
+            require_registered=session_id is not None,
+        )
+    except ValueError as exc:
+        return None, None, str(exc), None, None, 0, None
+    if not validated_video_path.exists():
+        return None, None, GUI_INPUT_PATH_MISSING_MESSAGE, None, None, 0, None
+    video_path = str(validated_video_path)
 
     # 构建配置
     config = MattingConfig()
@@ -634,11 +919,12 @@ def process_video(
         logger.info("Applied auto optimization for %s: %s", video_path, suggestion)
 
     # 处理
-    _output_dir = _resolve_gui_output_dir(video_path)
+    request_token = uuid4().hex
+    output_dir = _resolve_request_output_dir(video_path, request_token)
     logger.info(
         "Starting GUI processing: video=%s output_dir=%s mode=%s quality=%s ai_model=%s",
         video_path,
-        _output_dir,
+        output_dir,
         mode,
         quality,
         use_ai,
@@ -661,11 +947,12 @@ def process_video(
     
     try:
         def on_progress(current, total, stage):
-            progress(current / total, desc=stage)
+            ratio = (current / total) if total > 0 else 0
+            progress(ratio, desc=stage)
 
-        params = _build_process_job_params(video_path, _output_dir, config)
-        queue = (queue_factory or _default_queue_factory)()
-        job = queue.submit(_build_process_job(video_path, params))
+        params = _build_process_job_params(video_path, output_dir, config)
+        queue = _resolve_queue(queue_factory=queue_factory, session_id=session_id)
+        job = queue.submit(_build_process_job(video_path, params, job_id=request_token))
 
         if queue.running_job is not None and queue.running_job is not job:
             return None, None, _queued_status(queue, job), None, None, 0, None
@@ -674,35 +961,53 @@ def process_video(
             return None, None, "⏳ 当前任务处理中", None, None, 0, None
 
         if job.status == JobStatus.QUEUED:
+            if queue.running_job is not None or queue.next_job() is not job:
+                return None, None, _queued_status(queue, job), None, None, 0, None
             service = (service_factory or _default_service_factory)()
             worker = (worker_factory or _default_worker_factory)(queue, _GuiProgressService(service, on_progress))
             request_job = job
-            while queue.running_job is None and queue.next_job() is not None:
-                completed_job = worker.run_next_job()
-                if completed_job is None:
-                    break
+            completed_job = worker.run_next_job()
+            if completed_job is None:
+                return None, None, _queued_status(queue, job), None, None, 0, None
             job = request_job
 
         preview_input = None
         preview_output = None
 
         if job.status == JobStatus.FAILED:
+            if job.error is not None:
+                raise job.error
             raise RuntimeError(job.error_message or "processing failed")
         if job.status == JobStatus.CANCELLED:
             return None, None, "⏹ 已取消", None, None, 0, None
 
+        job_output_dir = Path(job.result.output_dir if job.result is not None else job.params.output_dir)
+
         # 打包序列帧为 ZIP
-        zip_path = _output_dir / "frames.zip" if generate_zip else None
+        zip_path = job_output_dir / "frames.zip" if generate_zip else None
         if zip_path is not None:
-            _create_zip(_output_dir, zip_path)
+            _create_zip(job_output_dir, zip_path)
 
         # 生成预览视频
-        preview_path = _output_dir / "preview.mp4"
-        _create_preview_video(_output_dir, preview_path)
+        preview_path = job_output_dir / "preview.mp4"
+        preview_quality_mode = str(job.params.config_overrides.get("preview_quality_mode", "fast"))
+        preview_video_params = inspect.signature(_create_preview_video).parameters
+        if "preview_quality_mode" in preview_video_params:
+            _create_preview_video(
+                job_output_dir,
+                preview_path,
+                preview_quality_mode=preview_quality_mode,
+            )
+        else:
+            _create_preview_video(job_output_dir, preview_path)
 
         # 生成首帧预览图
-        input_preview, output_preview = _create_preview_frames(_output_dir)
-        transparent_png = _find_transparent_png_download(_output_dir)
+        input_preview, output_preview = _create_preview_frames(job_output_dir, video_path)
+        transparent_png_params = inspect.signature(_find_transparent_png_download).parameters
+        if "session_id" in transparent_png_params:
+            transparent_png = _find_transparent_png_download(job_output_dir, session_id=session_id)
+        else:
+            transparent_png = _find_transparent_png_download(job_output_dir)
         frame_count, processing_time, fps = _summarize_job_result(job)
 
         status = (
@@ -715,17 +1020,13 @@ def process_video(
         if preview_path.exists() and preview_path.stat().st_size > 0:
             # Gradio 需要将文件放在其工作目录下才能正确服务
             # 复制到 Gradio 的临时目录
-            import shutil
-            gradio_temp = Path(tempfile.gettempdir()) / "gradio" / "matteflow_previews"
-            gradio_temp.mkdir(parents=True, exist_ok=True)
-
-            # 使用唯一文件名避免冲突
-            preview_name = f"preview_{_output_dir.name}.mp4"
-            gradio_preview_path = gradio_temp / preview_name
-
             try:
-                shutil.copy2(str(preview_path), str(gradio_preview_path))
-                preview_video = str(gradio_preview_path.resolve())
+                preview_video = _copy_preview_into_gradio_cache(
+                    job,
+                    preview_path,
+                    job_output_dir,
+                    session_id=session_id,
+                )
                 logger.info("Copied preview video to Gradio temp path: %s", preview_video)
             except Exception as e:
                 # 如果复制失败,直接使用原路径
@@ -777,32 +1078,60 @@ def _format_actual_parameter_summary(config):
     )
 
 
-def _create_preview_frames(output_dir):
+def _load_input_preview_frame(input_path: Path):
+    input_kind = detect_input_kind(input_path)
+
+    if input_kind is InputKind.IMAGE:
+        frames, _ = ImageDecoder().decode(input_path)
+        return frames[0].astype(np.uint8)
+
+    if input_kind is InputKind.SEQUENCE:
+        frames, _ = SequenceDecoder().decode(input_path)
+        return frames[0].astype(np.uint8)
+
+    if input_kind is InputKind.VIDEO:
+        cap = cv2.VideoCapture(str(input_path))
+        if not cap.isOpened():
+            raise ValueError(f"Cannot open video: {input_path}")
+        try:
+            ok, frame = cap.read()
+        finally:
+            cap.release()
+        if not ok or frame is None:
+            raise ValueError(f"Cannot read first frame from video: {input_path}")
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB).astype(np.uint8)
+
+    raise ValueError(f"Unsupported preview input: {input_path}")
+
+
+def _create_preview_frames(output_dir, input_path):
     """创建首帧预览对比图 - 支持子目录结构
     
     优先使用 Comp (预乘合成，背景黑色) 或 Processed (RGBA)
     避免使用 FG (未预乘，背景仍是绿色)
     """
+    output_dir = Path(output_dir)
+    input_preview = _load_input_preview_frame(Path(input_path))
+
     # 查找输出帧 - 优先顺序：Processed > Comp > FG > Matte
     frames = []
     for subdir in ["Processed", "Comp", "FG", "Matte"]:
         subdir_path = output_dir / subdir
-        if subdir_path.exists():
-            frames = sorted(subdir_path.glob("*.png"))
-            if frames:
-                logger.info("Using %s frame set for preview image: %s", subdir, frames[0].name)
-                break
+        frames = _preview_frame_candidates(subdir_path)
+        if frames:
+            logger.info("Using %s frame set for preview image: %s", subdir, frames[0].name)
+            break
 
     # 如果没有子目录,检查根目录
     if not frames:
-        frames = sorted(output_dir.glob("frame_*.png"))
+        frames = _preview_frame_candidates(output_dir, prefix="frame_")
 
     if not frames:
         logger.warning("No preview frames found in %s", output_dir)
         return None, None
 
     # 取首帧
-    img = np.array(Image.open(frames[0]))
+    img = _normalize_preview_frame(_load_preview_output_frame(frames[0]))
     h, w = img.shape[:2]
 
     # 创建棋盘格背景
@@ -817,7 +1146,7 @@ def _create_preview_frames(output_dir):
     used_subdir = None
     for subdir in ["Processed", "Comp", "FG", "Matte"]:
         subdir_path = output_dir / subdir
-        if subdir_path.exists() and any(subdir_path.glob("*.png")):
+        if _preview_frame_candidates(subdir_path):
             used_subdir = subdir
             break
 
@@ -845,28 +1174,97 @@ def _create_preview_frames(output_dir):
         # 默认：直接显示
         output_preview = img[:, :, :3].astype(np.uint8)
 
-    # 输入预览(RGB 原图,不带 alpha)
-    input_preview = img[:, :, :3].astype(np.uint8)
-
     return input_preview, output_preview
 
 
-def _find_transparent_png_download(output_dir):
+def _normalize_preview_frame(image_array):
+    if image_array.ndim == 2:
+        return np.stack([image_array] * 3, axis=-1)
+    if image_array.ndim == 3 and image_array.shape[2] in (3, 4):
+        return image_array
+    raise ValueError(f"Unsupported preview frame shape: {image_array.shape}")
+
+
+def _preview_frame_candidates(directory: Path, prefix: str | None = None) -> list[Path]:
+    if not directory.exists():
+        return []
+    candidates = [
+        path
+        for path in directory.iterdir()
+        if path.is_file() and path.suffix.lower() in PREVIEW_OUTPUT_EXTENSIONS
+    ]
+    if prefix is not None:
+        candidates = [path for path in candidates if path.name.startswith(prefix)]
+    return sorted(candidates)
+
+
+def _load_preview_output_frame(frame_path: Path) -> np.ndarray:
+    frame = cv2.imread(str(frame_path), cv2.IMREAD_UNCHANGED)
+    if frame is None:
+        try:
+            frame = np.array(Image.open(frame_path))
+        except Exception as exc:
+            raise ValueError(f"Cannot open preview frame: {frame_path}") from exc
+        return frame
+
+    if frame.dtype.kind == "f":
+        frame = np.clip(frame, 0.0, 1.0)
+        frame = (frame * 255.0).astype(np.uint8)
+    elif frame.dtype != np.uint8:
+        frame = np.clip(frame, 0, 255).astype(np.uint8)
+
+    if frame.ndim == 2:
+        return frame
+    if frame.ndim == 3 and frame.shape[2] == 4:
+        return cv2.cvtColor(frame, cv2.COLOR_BGRA2RGBA)
+    if frame.ndim == 3 and frame.shape[2] == 3:
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    raise ValueError(f"Unsupported preview frame shape: {frame.shape}")
+
+
+def _convert_preview_frame_to_png(frame_path: Path, session_id: str | None = None) -> Path | None:
+    try:
+        frame = _load_preview_output_frame(frame_path)
+    except ValueError:
+        logger.warning("Failed to convert preview frame to PNG: %s", frame_path, exc_info=True)
+        return None
+
+    download_dir = _gradio_preview_root() / "downloads"
+    download_dir.mkdir(parents=True, exist_ok=True)
+    output_path = download_dir / f"{frame_path.stem}.png"
+    Image.fromarray(frame).save(output_path)
+    _session_preview_artifact_registry.register_path(session_id, output_path)
+    return output_path
+
+
+def _select_preview_frame_paths(frames: list[Path], preview_quality_mode: str) -> list[Path]:
+    if preview_quality_mode != "fast" or len(frames) <= PREVIEW_FAST_FRAME_LIMIT:
+        return frames
+
+    sampled_indices = np.linspace(0, len(frames) - 1, num=PREVIEW_FAST_FRAME_LIMIT, dtype=int)
+    return [frames[index] for index in sampled_indices]
+
+
+def _find_transparent_png_download(output_dir, session_id=None):
     """Return the first RGBA processed PNG for direct single-frame download."""
     processed_dir = Path(output_dir) / "Processed"
     if not processed_dir.exists():
         logger.info("Processed output directory does not exist for PNG download: %s", processed_dir)
         return None
 
-    frames = sorted(processed_dir.glob("*.png"))
+    png_frames = sorted(processed_dir.glob("*.png"))
+    if png_frames:
+        return png_frames[0]
+
+    frames = _preview_frame_candidates(processed_dir)
     if not frames:
-        logger.info("No processed PNG frames available for download in %s", processed_dir)
+        logger.info("No processed preview frames available for download in %s", processed_dir)
         return None
 
-    return frames[0]
+    return _convert_preview_frame_to_png(frames[0], session_id=session_id)
 
 
-def _create_preview_video(output_dir, preview_path):
+def _create_preview_video(output_dir, preview_path, preview_quality_mode="fast"):
     """创建带棋盘格背景的预览视频 - 使用 imageio 确保浏览器兼容
     
     优先使用 Comp (预乘合成，背景黑色) 或 Processed (RGBA)
@@ -877,28 +1275,29 @@ def _create_preview_video(output_dir, preview_path):
     frames = []
     for subdir in ["Processed", "Comp", "FG", "Matte"]:
         subdir_path = output_dir / subdir
-        if subdir_path.exists():
-            frames = sorted(subdir_path.glob("*.png"))
-            if frames:
-                logger.info("Using %s frame set for preview video", subdir)
-                break
+        frames = _preview_frame_candidates(subdir_path)
+        if frames:
+            logger.info("Using %s frame set for preview video", subdir)
+            break
 
     # 如果没有子目录,检查根目录
     if not frames:
-        frames = sorted(output_dir.glob("frame_*.png"))
+        frames = _preview_frame_candidates(output_dir, prefix="frame_")
 
     if not frames:
         logger.warning("No frames found for preview video in %s", output_dir)
         return
 
+    frames = _select_preview_frame_paths(frames, preview_quality_mode)
+
     try:
         import imageio
     except ImportError:
         logger.warning("imageio not available, falling back to cv2 preview writer")
-        _create_preview_video_cv2(output_dir, preview_path)
+        _create_preview_video_cv2(output_dir, preview_path, preview_quality_mode=preview_quality_mode)
         return
 
-    first = np.array(Image.open(frames[0]))
+    first = _normalize_preview_frame(_load_preview_output_frame(frames[0]))
     h, w = first.shape[:2]
 
     # 创建棋盘格背景
@@ -928,12 +1327,12 @@ def _create_preview_video(output_dir, preview_path):
             writer = imageio.get_writer(str(preview_path), fps=30)
         except Exception as e2:
             logger.warning("imageio default writer failed, falling back to cv2: %s", e2)
-            _create_preview_video_cv2(output_dir, preview_path)
+            _create_preview_video_cv2(output_dir, preview_path, preview_quality_mode=preview_quality_mode)
             return
 
     frame_count = 0
     for frame_path in frames:
-        rgba = np.array(Image.open(frame_path))
+        rgba = _normalize_preview_frame(_load_preview_output_frame(frame_path))
 
         # 处理 RGBA 或 RGB
         if rgba.shape[2] == 4:
@@ -952,25 +1351,26 @@ def _create_preview_video(output_dir, preview_path):
     logger.info("Created preview video: %s (%s frames)", preview_path, frame_count)
 
 
-def _create_preview_video_cv2(output_dir, preview_path):
+def _create_preview_video_cv2(output_dir, preview_path, preview_quality_mode="fast"):
     """备用:使用 OpenCV 创建预览视频"""
 
     # 查找输出帧
     frames = []
     for subdir in ["Processed", "Comp", "FG", "Matte"]:
         subdir_path = output_dir / subdir
-        if subdir_path.exists():
-            frames = sorted(subdir_path.glob("*.png"))
-            if frames:
-                break
+        frames = _preview_frame_candidates(subdir_path)
+        if frames:
+            break
 
     if not frames:
-        frames = sorted(output_dir.glob("frame_*.png"))
+        frames = _preview_frame_candidates(output_dir, prefix="frame_")
 
     if not frames:
         return
 
-    first = np.array(Image.open(frames[0]))
+    frames = _select_preview_frame_paths(frames, preview_quality_mode)
+
+    first = _normalize_preview_frame(_load_preview_output_frame(frames[0]))
     h, w = first.shape[:2]
 
     # 使用 mp4v 编码
@@ -991,7 +1391,7 @@ def _create_preview_video_cv2(output_dir, preview_path):
             bg[y:y+grid_size, x:x+grid_size] = color
 
     for frame_path in frames:
-        rgba = np.array(Image.open(frame_path))
+        rgba = _normalize_preview_frame(_load_preview_output_frame(frame_path))
         if rgba.shape[2] == 4:
             alpha = rgba[:, :, 3:4].astype(np.float32) / 255.0
             rgb = rgba[:, :, :3]
@@ -1008,18 +1408,18 @@ def _create_preview_video_cv2(output_dir, preview_path):
 
 
 def _create_zip(output_dir, zip_path):
-    """打包 PNG 序列帧为 ZIP"""
+    """打包输出序列帧为 ZIP。"""
     # 检查所有可能的输出目录
     all_frames = []
     for subdir in ["FG", "Matte", "Comp", "Processed"]:
         subdir_path = output_dir / subdir
         if subdir_path.exists():
-            frames = sorted(subdir_path.glob("*.png"))
+            frames = _preview_frame_candidates(subdir_path)
             all_frames.extend(frames)
 
     # 如果没有子目录,检查根目录
     if not all_frames:
-        all_frames = sorted(output_dir.glob("frame_*.png"))
+        all_frames = _preview_frame_candidates(output_dir, prefix="frame_")
 
     if not all_frames:
         logger.warning("No frames found to pack into zip under %s", output_dir)
@@ -1047,6 +1447,7 @@ def create_ui():
     """创建 Gradio UI"""
 
     with gr.Blocks(title="MatteFlow - 专业视频/序列帧/图片抠图") as app:
+        session_state = gr.State()
 
         # 顶部标题栏
         with gr.Row():
@@ -1350,7 +1751,7 @@ def create_ui():
 
         video_input.change(
             fn=_create_upload_preview,
-            inputs=[video_input],
+            inputs=[video_input, session_state],
             outputs=[upload_image_preview, upload_video_preview, upload_status],
         )
 
@@ -1388,10 +1789,8 @@ def create_ui():
             output_processed,
         ]
 
-        app.load(
-            fn=_recommended_preset_updates,
-            outputs=preset_outputs,
-        )
+        app.load(fn=_new_session_id, outputs=[session_state])
+        app.load(fn=_recommended_preset_updates, outputs=preset_outputs)
 
         preset_btn.click(
             fn=_recommended_preset_updates,
@@ -1445,6 +1844,7 @@ def create_ui():
                 ai_threshold,
                 ai_gain,
                 ai_sharpen,
+                session_state,
             ],
             outputs=[
                 result_preview,
@@ -1457,21 +1857,25 @@ def create_ui():
             ]
         ).then(
             fn=_queue_panel_rows_only,
+            inputs=[session_state],
             outputs=[queue_table],
         )
 
         run_all_btn.click(
             fn=run_all_jobs_for_ui,
+            inputs=[session_state],
             outputs=[status_text, queue_table],
         )
 
         cancel_btn.click(
             fn=cancel_current_job_with_panel,
+            inputs=[session_state],
             outputs=[status_text, queue_table],
         )
 
         clear_completed_btn.click(
             fn=clear_completed_jobs_for_ui,
+            inputs=[session_state],
             outputs=[status_text, queue_table],
         )
 

@@ -5,7 +5,7 @@ import numpy as np
 from PIL import Image
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts import web_gui
@@ -29,8 +29,9 @@ def test_create_preview_frames_prefers_processed_rgba_over_comp(tmp_path):
     comp[:, :, :] = [255, 200, 200]
     comp[0, 0, :] = [0, 0, 8]
     Image.fromarray(comp, mode="RGB").save(comp_dir / "comp_000000.png")
+    Image.fromarray(np.zeros((4, 4, 3), dtype=np.uint8), mode="RGB").save(tmp_path / "input.png")
 
-    _, output_preview = web_gui._create_preview_frames(output_dir)
+    _, output_preview = web_gui._create_preview_frames(output_dir, tmp_path / "input.png")
 
     assert output_preview is not None
     assert output_preview[0, 0, 2] > output_preview[0, 0, 0]

@@ -4,6 +4,7 @@
 """
 
 import importlib
+import inspect
 import logging
 import tempfile
 from pathlib import Path
@@ -14,6 +15,9 @@ import numpy as np
 import torch
 
 from ..config import MattingConfig
+from ..errors import ModelLoadError
+from ..utils.model_checker import validate_direct_model_file
+from ..utils.model_downloads import download_file_atomically
 from ..utils.model_paths import model_file
 
 logger = logging.getLogger(__name__)
@@ -59,8 +63,6 @@ class MatAnyone2Matte:
     
     def _download_model(self):
         """下载 MatAnyone2 模型"""
-        import urllib.request
-        
         model_dir = self._get_model_path().parent
         model_dir.mkdir(parents=True, exist_ok=True)
         
@@ -71,7 +73,11 @@ class MatAnyone2Matte:
         logger.info("Downloading MatAnyone2 weights from %s", url)
         
         try:
-            urllib.request.urlretrieve(url, model_path)
+            download_file_atomically(
+                url,
+                model_path,
+                validate=lambda path: validate_direct_model_file(path, "matanyone2.pth"),
+            )
             logger.info("Saved MatAnyone2 weights to %s", model_path)
         except Exception as e:
             raise RuntimeError(f"MatAnyone2 download failed: {e}") from e
@@ -79,7 +85,12 @@ class MatAnyone2Matte:
     def _get_model_path(self) -> Path:
         return model_file("matanyone2.pth")
     
-    def generate(self, frames: List[np.ndarray], first_frame_mask: Optional[np.ndarray] = None) -> List[np.ndarray]:
+    def generate(
+        self,
+        frames: List[np.ndarray],
+        first_frame_mask: Optional[np.ndarray] = None,
+        cancel_check=None,
+    ) -> List[np.ndarray]:
         """
         生成 Alpha Matte — 注意：后处理由调用方统一处理
         
@@ -92,15 +103,15 @@ class MatAnyone2Matte:
         """
         if self.model is None:
             logger.info("Model not available, returning empty alphas for %s frames", len(frames))
-            return [np.ones(f.shape[:2], dtype=np.float32) * 0.5 for f in frames]
+            raise ModelLoadError("MatAnyone2 model is not loaded")
         
         try:
             logger.info("Starting MatAnyone2 sequence inference for %s frames", len(frames))
-            return self._run_sequence_inference(frames, first_frame_mask)
+            return self._run_sequence_inference(frames, first_frame_mask, cancel_check=cancel_check)
             
-        except Exception as e:
+        except Exception as exc:
             logger.exception("MatAnyone2 inference failed")
-            return [np.ones(f.shape[:2], dtype=np.float32) * 0.5 for f in frames]
+            raise RuntimeError("MatAnyone2 inference failed") from exc
     
     def _apply_chroma_key_postprocess(self, alphas: List[np.ndarray]) -> List[np.ndarray]:
         """应用 Chroma Key 后处理参数 — 对齐 EZ-CorridorKey"""
@@ -108,7 +119,10 @@ class MatAnyone2Matte:
         return apply_chroma_key_postprocess(alphas, self.config)
     
     def _run_sequence_inference(
-        self, frames: List[np.ndarray], first_frame_mask: Optional[np.ndarray]
+        self,
+        frames: List[np.ndarray],
+        first_frame_mask: Optional[np.ndarray],
+        cancel_check=None,
     ) -> List[np.ndarray]:
         if not frames:
             return []
@@ -127,13 +141,16 @@ class MatAnyone2Matte:
                 output_dir,
                 len(frame_names),
             )
-            self.model.process_frames(
-                input_frames=rgb_frames,
-                mask_frame=mask,
-                output_dir=str(output_dir),
-                frame_names=frame_names,
-                clip_name="matteflow",
-            )
+            process_kwargs = {
+                "input_frames": rgb_frames,
+                "mask_frame": mask,
+                "output_dir": str(output_dir),
+                "frame_names": frame_names,
+                "clip_name": "matteflow",
+            }
+            if "cancel_check" in inspect.signature(self.model.process_frames).parameters:
+                process_kwargs["cancel_check"] = cancel_check
+            self.model.process_frames(**process_kwargs)
 
             alphas = []
             for frame_name in frame_names:
@@ -161,6 +178,6 @@ class MatAnyone2Matte:
             mask = np.clip(mask, 0, 255).astype(np.uint8)
         return mask
     
-    def generate_sequence(self, frames: List[np.ndarray]) -> List[np.ndarray]:
+    def generate_sequence(self, frames: List[np.ndarray], cancel_check=None) -> List[np.ndarray]:
         """序列处理"""
-        return self.generate(frames)
+        return self.generate(frames, cancel_check=cancel_check)

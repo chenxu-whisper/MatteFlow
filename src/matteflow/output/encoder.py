@@ -17,7 +17,7 @@ class RGBAEncoder:
         Float inputs are interpreted as 0..1 and converted to uint8. OpenCV
         expects BGR/BGRA channel order, while the pipeline works in RGB/RGBA.
         """
-        arr = self._to_uint8(image)
+        arr = self._prepare_for_write(image, output_path)
         if arr.ndim != 3 or arr.shape[2] not in (3, 4):
             raise ValueError(f"Expected RGB/RGBA image, got shape {arr.shape}")
 
@@ -29,10 +29,17 @@ class RGBAEncoder:
 
     def encode_grayscale(self, image: np.ndarray, output_path: str | Path) -> None:
         """Write a single-channel grayscale image."""
-        arr = self._to_uint8(image)
+        arr = self._prepare_for_write(image, output_path)
         if arr.ndim != 2:
             raise ValueError(f"Expected grayscale image, got shape {arr.shape}")
         self._write(arr, output_path)
+
+    @staticmethod
+    def _prepare_for_write(image: np.ndarray, output_path: str | Path) -> np.ndarray:
+        path = Path(output_path)
+        if path.suffix.lower() == ".exr":
+            return image.astype(np.float32, copy=False)
+        return RGBAEncoder._to_uint8(image)
 
     @staticmethod
     def _to_uint8(image: np.ndarray) -> np.ndarray:

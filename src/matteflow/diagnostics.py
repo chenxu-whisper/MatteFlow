@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from .errors import ProgressCallbackError
+
 
 class DiagnosticSeverity(str, Enum):
     ERROR = "error"
@@ -19,6 +21,7 @@ class DiagnosticCode(str, Enum):
     MODEL_RUNTIME_IMPORT_FAILED = "MODEL_RUNTIME_IMPORT_FAILED"
     MODEL_GPU_REQUIRED = "MODEL_GPU_REQUIRED"
     GPU_OUT_OF_MEMORY = "GPU_OUT_OF_MEMORY"
+    PROGRESS_CALLBACK_FAILED = "PROGRESS_CALLBACK_FAILED"
     INPUT_INVALID = "INPUT_INVALID"
     OUTPUT_DIR_UNWRITABLE = "OUTPUT_DIR_UNWRITABLE"
     UNKNOWN_PROCESSING_ERROR = "UNKNOWN_PROCESSING_ERROR"
@@ -137,8 +140,77 @@ def from_model_status(model_status_dict: dict[str, dict[str, Any]]) -> Diagnosti
 
 
 def from_exception(exc: Exception, context: dict[str, Any] | None = None) -> DiagnosticReport:
-    raw_message = str(exc)
+    chain_messages: list[str] = []
+    current: BaseException | None = exc
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        message = str(current)
+        if message:
+            chain_messages.append(message)
+        current = current.__cause__ or current.__context__
+
+    raw_message = " | ".join(chain_messages) or str(exc)
     lowered = raw_message.lower()
+
+    input_invalid_markers = (
+        "input not found",
+        "cannot open video",
+        "cannot open image",
+        "cannot read first frame",
+        "no supported images found",
+        "failed to load any frames",
+        "unsupported input",
+        "unsupported image format",
+    )
+    output_unwritable_markers = (
+        "permission denied",
+        "access is denied",
+        "read-only file system",
+    )
+
+    if isinstance(exc, ProgressCallbackError):
+        return DiagnosticReport(
+            items=(
+                DiagnosticItem(
+                    code=DiagnosticCode.PROGRESS_CALLBACK_FAILED,
+                    severity=DiagnosticSeverity.ERROR,
+                    title="进度回调失败",
+                    summary="进度更新通道发生异常，当前任务已停止。",
+                    actions=("检查 UI/队列进度回调实现", "查看日志输出"),
+                    evidence={"message": raw_message, "context": context or {}},
+                    blocking=True,
+                ),
+            )
+        )
+    if isinstance(exc, FileNotFoundError) or any(marker in lowered for marker in input_invalid_markers):
+        return DiagnosticReport(
+            items=(
+                DiagnosticItem(
+                    code=DiagnosticCode.INPUT_INVALID,
+                    severity=DiagnosticSeverity.ERROR,
+                    title="输入素材无效",
+                    summary="输入文件不存在、无法读取，或素材格式不受支持。",
+                    actions=("检查输入路径", "确认素材文件存在且格式受支持", "重新选择输入素材"),
+                    evidence={"message": raw_message, "context": context or {}},
+                    blocking=True,
+                ),
+            )
+        )
+    if isinstance(exc, PermissionError) or any(marker in lowered for marker in output_unwritable_markers):
+        return DiagnosticReport(
+            items=(
+                DiagnosticItem(
+                    code=DiagnosticCode.OUTPUT_DIR_UNWRITABLE,
+                    severity=DiagnosticSeverity.ERROR,
+                    title="输出目录不可写",
+                    summary="当前输出目录没有写入权限，无法保存处理结果。",
+                    actions=("更换输出目录", "检查目录权限", "关闭占用目标文件的程序"),
+                    evidence={"message": raw_message, "context": context or {}},
+                    blocking=True,
+                ),
+            )
+        )
     if "cuda out of memory" in lowered or "outofmemory" in lowered:
         return DiagnosticReport(
             items=(

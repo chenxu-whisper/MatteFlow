@@ -2,9 +2,53 @@
 
 import importlib
 import importlib.util
+import io
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from typing import Dict, List, Tuple
 
-from .model_paths import model_file, models_root, resolve_snapshot_model_dir
+from .model_paths import model_file, models_root, resolve_snapshot_model_dir, resolve_snapshot_repo_dir
+
+
+DIRECT_MODEL_MIN_BYTES = {
+    "matanyone2.pth": 50 * 1024 * 1024,
+    "corridorkey.pth": 100 * 1024 * 1024,
+    "rvm_mobilenetv3.pth": 5 * 1024 * 1024,
+}
+
+
+def validate_direct_model_file(path: Path, model_name: str | None = None) -> tuple[bool, str | None]:
+    target_name = model_name or path.name
+    min_bytes = DIRECT_MODEL_MIN_BYTES.get(target_name)
+
+    if not path.exists():
+        return False, "需要手动下载"
+
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False, "权重文件损坏或下载不完整"
+
+    if min_bytes is not None and size < min_bytes:
+        return False, "权重文件损坏或下载不完整"
+
+    return True, None
+
+
+def validate_sam2_snapshot_dir(path: Path) -> tuple[bool, str | None]:
+    if not path.exists():
+        return False, None
+    if not (path / "config.json").exists():
+        return False, "权重文件损坏或下载不完整"
+    return True, None
+
+
+def validate_hf_repo_dir(path: Path) -> tuple[bool, str | None]:
+    if not path.exists():
+        return False, None
+    if not (path / "config.json").exists():
+        return False, "权重文件损坏或下载不完整"
+    return True, None
 
 
 class ModelChecker:
@@ -59,7 +103,8 @@ class ModelChecker:
 
         if model_exists and cuda_available:
             try:
-                importlib.import_module("matteflow.vendor.gvm_core.wrapper")
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    importlib.import_module("matteflow.vendor.gvm_core.wrapper")
                 runtime_available = True
             except Exception:
                 runtime_available = False
@@ -84,13 +129,9 @@ class ModelChecker:
     
     def _check_matanyone2(self) -> Dict:
         """检查 MatAnyone2"""
-        model_path = self.matteflow_dir / "matanyone2.pth"
-        available = model_path.exists()
-        reason = None
-
-        if not available:
-            reason = "需要手动下载"
-        else:
+        model_path = model_file("matanyone2.pth")
+        available, reason = validate_direct_model_file(model_path, "matanyone2.pth")
+        if available:
             try:
                 importlib.import_module("matteflow.vendor.matanyone2_module.wrapper")
             except Exception:
@@ -108,37 +149,53 @@ class ModelChecker:
     
     def _check_sam2(self) -> Dict:
         """检查 SAM2"""
-        model_path = self.cache_dir / "models--facebook--sam2.1-hiera-base-plus"
+        model_path = resolve_snapshot_repo_dir(self.cache_dir, "facebook/sam2-hiera-base-plus")
+        available = model_path is not None
+        reason = None
+        if model_path is not None:
+            available, reason = validate_sam2_snapshot_dir(model_path)
+            if available:
+                try:
+                    importlib.import_module("transformers")
+                except Exception:
+                    available = False
+                    reason = "SAM2 runtime 不可导入"
         return {
             "name": "SAM2 (Segment Anything 2)",
-            "available": model_path.exists(),
-            "path": str(model_path),
+            "available": available,
+            "path": str(model_path or (self.cache_dir / "models--facebook--sam2-hiera-base-plus")),
             "size": "~324 MB",
             "auto_download": True,
-            "reason": None
+            "reason": reason
         }
     
     def _check_birefnet(self) -> Dict:
         """检查 BiRefNet"""
-        model_path = self.cache_dir / "models--ZhengPeng7--BiRefNet"
+        model_path = resolve_snapshot_repo_dir(self.cache_dir, "ZhengPeng7/BiRefNet")
+        available = model_path is not None
+        reason = None
+        if model_path is not None:
+            available, reason = validate_hf_repo_dir(model_path)
+            if available:
+                try:
+                    importlib.import_module("transformers")
+                except Exception:
+                    available = False
+                    reason = "BiRefNet runtime 不可导入"
         return {
             "name": "BiRefNet",
-            "available": model_path.exists(),
-            "path": str(model_path),
+            "available": available,
+            "path": str(model_path or (self.cache_dir / "models--ZhengPeng7--BiRefNet")),
             "size": "~940 MB",
             "auto_download": True,
-            "reason": None
+            "reason": reason
         }
     
     def _check_corridorkey(self) -> Dict:
         """检查 CorridorKey"""
         model_path = model_file("corridorkey.pth")
-        available = model_path.exists()
-        reason = None
-
-        if not available:
-            reason = "需要手动下载"
-        else:
+        available, reason = validate_direct_model_file(model_path, "corridorkey.pth")
+        if available:
             try:
                 importlib.import_module("matteflow.vendor.corridorkey_module.inference_engine")
             except Exception:
@@ -157,13 +214,14 @@ class ModelChecker:
     def _check_rvm(self) -> Dict:
         """检查 RVM"""
         model_path = model_file("rvm_mobilenetv3.pth")
+        available, reason = validate_direct_model_file(model_path, "rvm_mobilenetv3.pth")
         return {
             "name": "RVM (Robust Video Matting)",
-            "available": model_path.exists(),
+            "available": available,
             "path": str(model_path),
             "size": "~15 MB",
             "auto_download": True,
-            "reason": None
+            "reason": reason
         }
     
     def _check_rembg(self) -> Dict:

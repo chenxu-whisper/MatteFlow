@@ -6,6 +6,7 @@ import torch
 from typing import List, Optional
 
 from ..config import MattingConfig
+from ..errors import ModelLoadError
 from ..utils.model_paths import model_file
 
 
@@ -61,8 +62,7 @@ class RVMMatte:
     def generate(self, frame: np.ndarray) -> np.ndarray:
         """单帧抠图"""
         if self.model is None:
-            from .green_screen_matte import GreenScreenMatte
-            return GreenScreenMatte(self.config).generate(frame)
+            raise ModelLoadError("RVM model is not loaded")
         
         # 单帧模式：重置循环状态，避免时序污染
         self.reset()
@@ -77,9 +77,7 @@ class RVMMatte:
     def generate_sequence(self, frames: List[np.ndarray], progress_callback=None) -> List[np.ndarray]:
         """序列抠图（利用时序一致性）"""
         if self.model is None:
-            from .green_screen_matte import GreenScreenMatte
-            matte = GreenScreenMatte(self.config)
-            return [matte.generate(f) for f in frames]
+            raise ModelLoadError("RVM model is not loaded")
         
         alphas = []
         self.reset()

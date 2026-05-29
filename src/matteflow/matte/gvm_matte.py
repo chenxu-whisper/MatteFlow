@@ -19,6 +19,7 @@ import numpy as np
 import torch
 
 from ..config import MattingConfig
+from ..errors import ModelLoadError
 from ..utils.model_paths import models_root, resolve_snapshot_model_dir
 
 logger = logging.getLogger(__name__)
@@ -84,16 +85,16 @@ class GVMMatte:
         """
         if self.model is None:
             logger.info("Model not available, returning empty alphas for %s frames", len(frames))
-            return [np.ones(f.shape[:2], dtype=np.float32) * 0.5 for f in frames]
+            raise ModelLoadError("GVM model is not loaded")
         
         try:
             del hints  # Current GVM integration does not consume per-frame hints.
             logger.info("Starting GVM sequence inference for %s frames", len(frames))
             return self._run_sequence_inference(frames)
             
-        except Exception as e:
+        except Exception as exc:
             logger.exception("GVM inference failed")
-            return [np.ones(f.shape[:2], dtype=np.float32) * 0.5 for f in frames]
+            raise RuntimeError("GVM inference failed") from exc
     
     def _apply_chroma_key_postprocess(self, alphas: List[np.ndarray]) -> List[np.ndarray]:
         """应用 Chroma Key 后处理参数 — 对齐 EZ-CorridorKey"""

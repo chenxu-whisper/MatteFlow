@@ -1,6 +1,7 @@
 """混合抠图引擎 - AI + 传统算法融合"""
 
 import logging
+import inspect
 import numpy as np
 import cv2
 from typing import List
@@ -246,18 +247,127 @@ class HybridMatte:
         self.green_matte = GreenScreenMatte(config)
         self.black_matte = BlackBackgroundMatte(config)
     
-    def generate_sequence(self, frames: List[np.ndarray], bg_mode: BackgroundMode, progress_callback=None) -> List[np.ndarray]:
+    @staticmethod
+    def _check_cancelled(cancel_check) -> None:
+        if cancel_check is not None and cancel_check():
+            from ..errors import JobCancelledError
+
+            raise JobCancelledError("Matting cancelled by user")
+
+    def _generate_with_engine(
+        self,
+        engine,
+        frames: List[np.ndarray],
+        progress_callback=None,
+        cancel_check=None,
+    ) -> List[np.ndarray]:
+        self._check_cancelled(cancel_check)
+        kwargs = {}
+        params = inspect.signature(engine.generate_sequence).parameters
+        if "progress_callback" in params:
+            kwargs["progress_callback"] = progress_callback
+        if "cancel_check" in params:
+            kwargs["cancel_check"] = cancel_check
+        return engine.generate_sequence(frames, **kwargs)
+
+    def _generate_single_frame_with_engine(
+        self,
+        engine,
+        frame: np.ndarray,
+        cancel_check=None,
+    ) -> np.ndarray:
+        alphas = self._generate_with_engine(engine, [frame], cancel_check=cancel_check)
+        if not alphas:
+            raise RuntimeError("AI engine returned no alpha mattes for single-frame refinement")
+        return alphas[0]
+
+    def _select_sequence_ai_engine(self):
+        ai_model = getattr(self.config, "ai_model", "auto")
+
+        def is_ready(engine, attr="model"):
+            if engine is None:
+                return False
+            return getattr(engine, attr, None) is not None
+
+        explicit_candidates = (
+            ("gvm", self.gvm, "model"),
+            ("matanyone2", self.matanyone2, "model"),
+            ("corridorkey", self.corridorkey, "model"),
+            ("sam2", self.sam2, "predictor"),
+            ("rembg", self.rembg, "_available"),
+            ("birefnet", self.birefnet, "model"),
+            ("rvm", self.rvm, "model"),
+        )
+        for name, engine, attr in explicit_candidates:
+            if ai_model != name:
+                continue
+            if name == "sam2":
+                if engine is not None and (
+                    getattr(engine, "predictor", None) is not None or getattr(engine, "model", None) is not None
+                ):
+                    return name, engine, False
+            elif name == "rembg":
+                if engine is not None and getattr(engine, "_available", False):
+                    return name, engine, False
+            elif is_ready(engine, attr):
+                return name, engine, False
+            return None, None, False
+
+        auto_candidates = (
+            ("gvm", self.gvm),
+            ("corridorkey", self.corridorkey),
+            ("rembg", self.rembg),
+            ("birefnet", self.birefnet),
+            ("rvm", self.rvm),
+        )
+        for name, engine in auto_candidates:
+            if name == "rembg":
+                if engine is not None and getattr(engine, "_available", False):
+                    return name, engine, True
+                continue
+            if engine is not None and getattr(engine, "model", None) is not None:
+                return name, engine, True
+
+        return None, None, ai_model == "auto"
+
+    def _generate_unknown_background_matte(
+        self,
+        frames: List[np.ndarray],
+        progress_callback=None,
+        cancel_check=None,
+    ) -> List[np.ndarray]:
+        if not getattr(self.config, "use_ai", False):
+            raise RuntimeError("Unable to determine background mode automatically. Please choose green screen or black background.")
+
+        ai_name, ai_engine, auto_selected = self._select_sequence_ai_engine()
+        if ai_engine is None:
+            raise RuntimeError("Unable to determine background mode automatically. Please choose green screen or black background.")
+
+        self.last_active_ai_model = ai_name
+        suffix = " (auto)" if auto_selected else ""
+        logger.info("Using %s for unknown background fallback%s", ai_name.upper(), suffix)
+        return self._generate_with_engine(ai_engine, frames, progress_callback, cancel_check)
+
+    def generate_sequence(
+        self,
+        frames: List[np.ndarray],
+        bg_mode: BackgroundMode,
+        progress_callback=None,
+        cancel_check=None,
+    ) -> List[np.ndarray]:
         """序列抠图"""
         self.last_active_ai_model = None
         if bg_mode == BackgroundMode.GREEN_SCREEN:
-            return self._green_screen_matte(frames, progress_callback)
+            return self._green_screen_matte(frames, progress_callback, cancel_check)
         elif bg_mode == BackgroundMode.BLACK_BACKGROUND:
-            return self._black_background_matte(frames, progress_callback)
+            return self._black_background_matte(frames, progress_callback, cancel_check)
+        elif bg_mode == BackgroundMode.UNKNOWN:
+            return self._generate_unknown_background_matte(frames, progress_callback, cancel_check)
         else:
             # Auto - 默认用绿幕逻辑
-            return self._green_screen_matte(frames, progress_callback)
+            return self._green_screen_matte(frames, progress_callback, cancel_check)
     
-    def _green_screen_matte(self, frames: List[np.ndarray], progress_callback) -> List[np.ndarray]:
+    def _green_screen_matte(self, frames: List[np.ndarray], progress_callback, cancel_check=None) -> List[np.ndarray]:
         """绿幕抠图 - 修复：传统算法为主，AI 仅辅助边缘细化"""
         logger.info(
             "Starting green screen matting: frames=%s ai_enhance=%s ai_model=%s",
@@ -273,6 +383,7 @@ class HybridMatte:
         logger.info("Using traditional green screen as base")
         base_alphas = []
         for i, frame in enumerate(frames):
+            self._check_cancelled(cancel_check)
             alpha = self.green_matte.generate(frame)
             base_alphas.append(alpha)
             if progress_callback and i % max(1, len(frames) // 20) == 0:
@@ -317,12 +428,17 @@ class HybridMatte:
             if ai_engine is not None:
                 refined_alphas = []
                 for i, (frame, base_alpha) in enumerate(zip(frames, base_alphas)):
+                    self._check_cancelled(cancel_check)
                     # 只在边缘区域用 AI 辅助
                     edge_mask = (base_alpha > 0.1) & (base_alpha < 0.9)
                     
                     if np.any(edge_mask):
                         # 用 AI 生成边缘 alpha
-                        ai_alpha = ai_engine.generate(frame)
+                        ai_alpha = self._generate_single_frame_with_engine(
+                            ai_engine,
+                            frame,
+                            cancel_check=cancel_check,
+                        )
                         
                         # 融合策略：
                         # - 核心前景 (alpha > 0.8)：传统算法（保护白色/毛发）
@@ -347,59 +463,12 @@ class HybridMatte:
         # 纯 AI 模式：根据用户选择的模型优先使用
         ai_alphas = None
         if self.config.use_ai:
-            # 获取用户指定的模型
-            ai_model = getattr(self.config, 'ai_model', 'auto')
-            
-            # 根据用户选择使用特定模型
-            if ai_model == "gvm" and self.gvm is not None and self.gvm.model is not None:
-                self.last_active_ai_model = "gvm"
-                logger.info("Using GVM for green screen")
-                ai_alphas = self.gvm.generate_sequence(frames)
-            elif ai_model == "matanyone2" and self.matanyone2 is not None and self.matanyone2.model is not None:
-                self.last_active_ai_model = "matanyone2"
-                logger.info("Using MatAnyone2 for green screen")
-                ai_alphas = self.matanyone2.generate_sequence(frames)
-            elif ai_model == "corridorkey" and self.corridorkey is not None and self.corridorkey.model is not None:
-                self.last_active_ai_model = "corridorkey"
-                logger.info("Using CorridorKey for green screen")
-                ai_alphas = self.corridorkey.generate_sequence(frames, progress_callback)
-            elif ai_model == "sam2" and self.sam2 is not None and (self.sam2.predictor is not None or self.sam2.model is not None):
-                self.last_active_ai_model = "sam2"
-                logger.info("Using SAM2 for green screen")
-                ai_alphas = self.sam2.generate_sequence(frames, progress_callback)
-            elif ai_model == "rembg" and self.rembg is not None and self.rembg._available:
-                self.last_active_ai_model = "rembg"
-                logger.info("Using rembg for green screen")
-                ai_alphas = self.rembg.generate_sequence(frames, progress_callback)
-            elif ai_model == "birefnet" and self.birefnet is not None and self.birefnet.model is not None:
-                self.last_active_ai_model = "birefnet"
-                logger.info("Using BiRefNet for green screen")
-                ai_alphas = self.birefnet.generate_sequence(frames, progress_callback)
-            elif ai_model == "rvm" and self.rvm is not None and self.rvm.model is not None:
-                self.last_active_ai_model = "rvm"
-                logger.info("Using RVM for green screen")
-                ai_alphas = self.rvm.generate_sequence(frames, progress_callback)
-            # auto 模式：按优先级自动选择
-            elif self.gvm is not None and self.gvm.model is not None:
-                self.last_active_ai_model = "gvm"
-                logger.info("Using GVM for green screen (auto)")
-                ai_alphas = self.gvm.generate_sequence(frames)
-            elif self.corridorkey is not None and self.corridorkey.model is not None:
-                self.last_active_ai_model = "corridorkey"
-                logger.info("Using CorridorKey for green screen (auto)")
-                ai_alphas = self.corridorkey.generate_sequence(frames, progress_callback)
-            elif self.rembg is not None and self.rembg._available:
-                self.last_active_ai_model = "rembg"
-                logger.info("Using rembg for green screen (auto)")
-                ai_alphas = self.rembg.generate_sequence(frames, progress_callback)
-            elif self.birefnet is not None and self.birefnet.model is not None:
-                self.last_active_ai_model = "birefnet"
-                logger.info("Using BiRefNet for green screen (auto)")
-                ai_alphas = self.birefnet.generate_sequence(frames, progress_callback)
-            elif self.rvm is not None and self.rvm.model is not None:
-                self.last_active_ai_model = "rvm"
-                logger.info("Using RVM for green screen (auto)")
-                ai_alphas = self.rvm.generate_sequence(frames, progress_callback)
+            ai_name, ai_engine, auto_selected = self._select_sequence_ai_engine()
+            if ai_engine is not None:
+                self.last_active_ai_model = ai_name
+                suffix = " (auto)" if auto_selected else ""
+                logger.info("Using %s for green screen%s", ai_name.upper(), suffix)
+                ai_alphas = self._generate_with_engine(ai_engine, frames, progress_callback, cancel_check)
         
         if ai_alphas is not None:
             ai_alphas = self._merge_green_screen_effects(base_alphas, ai_alphas, frames)
@@ -592,7 +661,7 @@ class HybridMatte:
         )
         return (~screen_green) & neutral_soft & (soft_bright | soft_midtone)
     
-    def _black_background_matte(self, frames: List[np.ndarray], progress_callback) -> List[np.ndarray]:
+    def _black_background_matte(self, frames: List[np.ndarray], progress_callback, cancel_check=None) -> List[np.ndarray]:
         """
         黑底抠图 - 传统算法 + AI 边缘增强
         
@@ -606,6 +675,7 @@ class HybridMatte:
         # 1. 传统算法生成基础 alpha
         base_alphas = []
         for i, frame in enumerate(frames):
+            self._check_cancelled(cancel_check)
             alpha = self.black_matte.generate(frame)
             base_alphas.append(alpha)
             if progress_callback and i % max(1, len(frames) // 20) == 0:
@@ -614,7 +684,10 @@ class HybridMatte:
         # 2. 如果有 RVM，用 AI 做边缘细化
         if self.rvm is not None and self.rvm.model is not None:
             logger.info("Applying RVM edge refinement for black background")
-            ai_alphas = [self.rvm.generate(frame) for frame in frames]
+            ai_alphas = []
+            for frame in frames:
+                self._check_cancelled(cancel_check)
+                ai_alphas.append(self.rvm.generate(frame))
             return self._merge_black_background_effects(base_alphas, ai_alphas, frames)
         
         return base_alphas

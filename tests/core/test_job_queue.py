@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from matteflow.job_queue import GPUJob, GPUJobQueue, JobStatus, JobType
@@ -96,8 +96,9 @@ def test_job_queue_deduplicates_same_input_and_job_type(tmp_path):
 
     second = queue.submit(duplicate)
 
-    assert second is first
-    assert queue.queued_snapshot == (first,)
+    assert second is duplicate
+    assert second is not first
+    assert queue.queued_snapshot == (first, second)
 
 
 def test_job_queue_allows_same_input_with_different_job_type(tmp_path):

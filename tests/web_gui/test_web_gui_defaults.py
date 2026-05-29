@@ -1,12 +1,13 @@
 import inspect
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 from PIL import Image
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
@@ -258,9 +259,12 @@ def test_process_video_applies_effective_advanced_controls(monkeypatch, tmp_path
                 timings={"fps": 2.0},
             )
 
+    input_path = tmp_path / "input.png"
+    Image.fromarray(np.zeros((2, 2, 3), dtype=np.uint8), mode="RGB").save(input_path)
+
     monkeypatch.setattr(web_gui, "_resolve_gui_output_dir", lambda video_path: tmp_path)
     monkeypatch.setattr(web_gui, "_create_preview_video", lambda output_dir, preview_path: None)
-    monkeypatch.setattr(web_gui, "_create_preview_frames", lambda output_dir: (None, None))
+    monkeypatch.setattr(web_gui, "_create_preview_frames", lambda output_dir, input_path: (None, None))
 
     def fail_if_zip_created(output_dir, zip_path):
         raise AssertionError("ZIP should not be generated when generate_zip is False")
@@ -268,7 +272,7 @@ def test_process_video_applies_effective_advanced_controls(monkeypatch, tmp_path
     monkeypatch.setattr(web_gui, "_create_zip", fail_if_zip_created)
 
     result = web_gui.process_video(
-        video_path=str(tmp_path / "input.png"),
+        video_path=str(input_path),
         mode="green",
         quality="standard",
         use_ai="gvm",
@@ -340,24 +344,38 @@ def test_process_video_applies_effective_advanced_controls(monkeypatch, tmp_path
 
 
 def test_process_video_applies_auto_optimized_input_params(monkeypatch, tmp_path):
-    captured = {}
-
-    class FakePipeline:
-        def __init__(self, config):
-            captured["config"] = config
-
-        def process(self, video_path, output_dir, progress_callback):
-            processed_dir = Path(output_dir) / "Processed"
+    class FakeService:
+        def process(self, params, progress_callback=None, cancel_check=None):
+            del progress_callback, cancel_check
+            processed_dir = Path(params.output_dir) / "Processed"
             processed_dir.mkdir(parents=True, exist_ok=True)
             Image.fromarray(np.zeros((2, 2, 4), dtype=np.uint8), mode="RGBA").save(
                 processed_dir / "processed_000000.png"
             )
-            return {"frames_processed": 1, "fps": 1.0, "elapsed_time": 1.0}
+            return ProcessResult(
+                success=True,
+                input_path=params.input_path,
+                output_dir=params.output_dir,
+                background_mode="green_screen",
+                frame_count=1,
+                processing_time=1.0,
+                timings={"fps": 1.0},
+            )
 
-    monkeypatch.setattr(web_gui, "MattingPipeline", FakePipeline)
+    monkeypatch.setattr(
+        web_gui,
+        "suggest_input_params",
+        lambda video_path, config: SimpleNamespace(summary="自动优化已应用"),
+    )
+    monkeypatch.setattr(
+        web_gui,
+        "apply_suggestion",
+        lambda config, suggestion: setattr(config, "screen_color", "green")
+        or setattr(config, "green_similarity", 0.35),
+    )
     monkeypatch.setattr(web_gui, "_resolve_gui_output_dir", lambda video_path: tmp_path)
     monkeypatch.setattr(web_gui, "_create_preview_video", lambda output_dir, preview_path: None)
-    monkeypatch.setattr(web_gui, "_create_preview_frames", lambda output_dir: (None, None))
+    monkeypatch.setattr(web_gui, "_create_preview_frames", lambda output_dir, input_path: (None, None))
 
     image_path = tmp_path / "input.png"
     Image.fromarray(np.full((4, 4, 3), [20, 185, 55], dtype=np.uint8), mode="RGB").save(image_path)
@@ -405,9 +423,9 @@ def test_process_video_applies_auto_optimized_input_params(monkeypatch, tmp_path
         ai_threshold=0.1,
         ai_gain=1.2,
         ai_sharpen=0.0,
+        service_factory=lambda: FakeService(),
     )
 
-    assert captured["config"].screen_color == "green"
     status = result[2]
     assert "自动优化" in status
     assert "本次实际参数" in status
@@ -430,10 +448,12 @@ def test_process_video_formats_failures_with_diagnostics(monkeypatch, tmp_path):
             raise RuntimeError("decoder exploded")
 
     local_queue = GPUJobQueue()
+    input_path = tmp_path / "input.png"
+    Image.fromarray(np.zeros((2, 2, 3), dtype=np.uint8), mode="RGB").save(input_path)
     monkeypatch.setattr(web_gui, "_resolve_gui_output_dir", lambda video_path: tmp_path)
 
     result = web_gui.process_video(
-        video_path=str(tmp_path / "input.png"),
+        video_path=str(input_path),
         mode="green",
         quality="standard",
         use_ai="gvm",

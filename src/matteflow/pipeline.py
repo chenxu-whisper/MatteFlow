@@ -1,5 +1,6 @@
 """MatteFlow 主 Pipeline"""
 
+import inspect
 import logging
 import time
 from pathlib import Path
@@ -7,6 +8,7 @@ from typing import Union, Optional
 import numpy as np
 
 from .config import MattingConfig, QualityMode, BackgroundMode
+from .errors import JobCancelledError, ProgressCallbackError
 from .input.decoder import ImageDecoder, SequenceDecoder, VideoDecoder
 from .input.formats import InputKind, detect_input_kind
 from .analysis.background_analyzer import BackgroundAnalyzer
@@ -68,12 +70,23 @@ class MattingPipeline:
             lifted_from_zero,
             suppressed_to_near_zero,
         )
+
+    @staticmethod
+    def _assert_sequence_length(stage: str, expected_count: int, actual_count: int, item_name: str) -> None:
+        if expected_count != actual_count:
+            raise RuntimeError(
+                f"{item_name} count mismatch after {stage}: expected {expected_count}, got {actual_count}"
+            )
+
+    def _assert_frame_alpha_alignment(self, stage: str, frames, alphas) -> None:
+        self._assert_sequence_length(stage, len(frames), len(alphas), "Alpha")
     
     def process(
         self,
         input_path: Union[str, Path],
         output_dir: Union[str, Path],
-        progress_callback=None
+        progress_callback=None,
+        cancel_check=None,
     ) -> dict:
         """
         处理视频、序列帧或单张图片
@@ -103,10 +116,12 @@ class MattingPipeline:
         
         # 1. 输入解码
         self._notify(progress_callback, 0, 100, "decoding")
+        self._check_cancelled(cancel_check)
         stage_start = time.time()
         frames, meta = self._decode_input(input_path)
         timings["decode"] = time.time() - stage_start
         total_frames = len(frames)
+        self._check_cancelled(cancel_check)
         
         if total_frames == 0:
             raise ValueError(f"No frames found in {input_path}")
@@ -120,6 +135,7 @@ class MattingPipeline:
         
         # 2. 背景模式识别
         self._notify(progress_callback, 5, 100, "analyzing")
+        self._check_cancelled(cancel_check)
         stage_start = time.time()
         if self.config.background_mode == BackgroundMode.AUTO:
             bg_mode = self.analyzer.analyze(frames)
@@ -128,22 +144,38 @@ class MattingPipeline:
             bg_mode = self.config.background_mode
             logger.info("Using configured background mode: %s", bg_mode.value)
         timings["analyze"] = time.time() - stage_start
+        self._check_cancelled(cancel_check)
         
         # 3. 生成 Matte
         self._notify(progress_callback, 10, 100, "matting")
+        self._check_cancelled(cancel_check)
         stage_start = time.time()
-        alphas = self._generate_matte(frames, bg_mode, progress_callback)
+        generate_matte_params = inspect.signature(self._generate_matte).parameters
+        if "cancel_check" in generate_matte_params:
+            alphas = self._generate_matte(
+                frames,
+                bg_mode,
+                progress_callback,
+                cancel_check=cancel_check,
+            )
+        else:
+            alphas = self._generate_matte(frames, bg_mode, progress_callback)
+        self._assert_frame_alpha_alignment("matte", frames, alphas)
         timings["matte"] = time.time() - stage_start
+        self._check_cancelled(cancel_check)
         
         # 4. 边缘细化
         timings["refine"] = 0.0
         if self.config.quality_mode in (QualityMode.STANDARD, QualityMode.HIGH):
             self._notify(progress_callback, 50, 100, "refining")
+            self._check_cancelled(cancel_check)
             stage_start = time.time()
             alphas_before_refine = [alpha.copy() for alpha in alphas]
             alphas = self.refiner.refine(frames, alphas)
+            self._assert_frame_alpha_alignment("refine", frames, alphas)
             self._log_alpha_stage_delta("refine", alphas_before_refine, alphas)
             timings["refine"] = time.time() - stage_start
+            self._check_cancelled(cancel_check)
         else:
             logger.info("Skipping refine stage for quality mode: %s", self.config.quality_mode.value)
         
@@ -151,14 +183,17 @@ class MattingPipeline:
         timings["despeckle"] = 0.0
         if self.config.quality_mode in (QualityMode.STANDARD, QualityMode.HIGH):
             self._notify(progress_callback, 55, 100, "despeckling")
+            self._check_cancelled(cancel_check)
             stage_start = time.time()
             alphas_before_despeckle = [alpha.copy() for alpha in alphas]
             despeckle_context = {
                 "active_ai_model": getattr(getattr(self, "hybrid_matte", None), "last_active_ai_model", None),
             }
             alphas = self.despeckle.process(alphas, frames=frames, context=despeckle_context)
+            self._assert_frame_alpha_alignment("despeckle", frames, alphas)
             self._log_alpha_stage_delta("despeckle", alphas_before_despeckle, alphas)
             timings["despeckle"] = time.time() - stage_start
+            self._check_cancelled(cancel_check)
         else:
             logger.info("Skipping despeckle stage for quality mode: %s", self.config.quality_mode.value)
         
@@ -166,9 +201,12 @@ class MattingPipeline:
         timings["stabilize"] = 0.0
         if self.config.quality_mode in (QualityMode.STANDARD, QualityMode.HIGH) and total_frames > 1:
             self._notify(progress_callback, 60, 100, "stabilizing")
+            self._check_cancelled(cancel_check)
             stage_start = time.time()
             alphas = self.stabilizer.stabilize(alphas)
+            self._assert_frame_alpha_alignment("stabilize", frames, alphas)
             timings["stabilize"] = time.time() - stage_start
+            self._check_cancelled(cancel_check)
         else:
             logger.info(
                 "Skipping stabilize stage: quality=%s total_frames=%s",
@@ -178,15 +216,25 @@ class MattingPipeline:
         
         # 7. 颜色去污染（在时序稳定之后，基于稳定的 alpha）
         self._notify(progress_callback, 75, 100, "decontaminating")
+        self._check_cancelled(cancel_check)
         stage_start = time.time()
         frames = self.decontaminate.process(frames, alphas, bg_mode)
+        self._assert_sequence_length("decontaminate", total_frames, len(frames), "Frame")
+        self._assert_frame_alpha_alignment("decontaminate", frames, alphas)
         timings["decontaminate"] = time.time() - stage_start
+        self._check_cancelled(cancel_check)
         
         # 7. RGBA 合成与输出
         self._notify(progress_callback, 85, 100, "encoding")
+        self._check_cancelled(cancel_check)
         stage_start = time.time()
-        self._encode_output(frames, alphas, output_dir, meta)
+        encode_output_params = inspect.signature(self._encode_output).parameters
+        if "cancel_check" in encode_output_params:
+            self._encode_output(frames, alphas, output_dir, meta, cancel_check=cancel_check)
+        else:
+            self._encode_output(frames, alphas, output_dir, meta)
         timings["encode"] = time.time() - stage_start
+        self._check_cancelled(cancel_check)
         
         elapsed = time.time() - start_time
         timings["total"] = elapsed
@@ -226,6 +274,11 @@ class MattingPipeline:
             output_dir,
         )
         return result
+
+    @staticmethod
+    def _check_cancelled(cancel_check) -> None:
+        if cancel_check is not None and cancel_check():
+            raise JobCancelledError("Processing cancelled by user")
     
     def _decode_input(self, input_path: Path):
         """解码输入"""
@@ -241,7 +294,7 @@ class MattingPipeline:
             return decoder.decode(input_path)
         raise FileNotFoundError(f"Input not found: {input_path}")
     
-    def _generate_matte(self, frames, bg_mode, progress_callback):
+    def _generate_matte(self, frames, bg_mode, progress_callback, cancel_check=None):
         """生成 matte"""
         total = len(frames)
         
@@ -251,42 +304,57 @@ class MattingPipeline:
                 self._notify(progress_callback, progress, 100, "matting")
         
         # 使用混合抠图引擎
-        alphas = self.hybrid_matte.generate_sequence(frames, bg_mode, on_progress)
+        alphas = self.hybrid_matte.generate_sequence(
+            frames,
+            bg_mode,
+            progress_callback=on_progress,
+            cancel_check=cancel_check,
+        )
         
         return alphas
     
-    def _encode_output(self, frames, alphas, output_dir, meta):
+    def _encode_output(self, frames, alphas, output_dir, meta, cancel_check=None):
         """编码输出"""
         output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_ext = f".{getattr(self.config, 'output_format', 'png').lower().lstrip('.')}"
+        premultiply_rgb = bool(getattr(self.config, "output_premultiplied", False))
+        self._assert_frame_alpha_alignment("encode", frames, alphas)
+
+        def _check_encode_cancelled() -> None:
+            self._check_cancelled(cancel_check)
         
-        # RGBA 合成（统一为 float32 [0,1]）
-        rgba_frames = []
-        for frame, alpha in zip(frames, alphas):
-            # frame 可能是 uint8 [0,255] 或 float [0,1]
+        def _frame_to_float(frame):
             if frame.dtype == np.uint8:
-                frame_f = frame.astype(np.float32) / 255.0
-            else:
-                frame_f = frame.astype(np.float32)
-            
-            rgba = np.dstack([frame_f, alpha])
-            rgba_frames.append(rgba)
+                return frame.astype(np.float32) / 255.0
+            return frame.astype(np.float32)
+
+        def _compose_rgba(frame, alpha, premultiplied: bool) -> np.ndarray:
+            frame_f = _frame_to_float(frame)
+            alpha_f = np.clip(alpha.astype(np.float32, copy=False), 0.0, 1.0)
+            if premultiplied:
+                frame_f = frame_f * alpha_f[..., np.newaxis]
+            return np.dstack([frame_f, alpha_f])
         
         # EZ-CorridorKey 风格输出
         # 1. FG (Straight foreground) - 直接前景，未预乘
         if self.config.output_fg:
             fg_dir = output_dir / "FG"
             fg_dir.mkdir(exist_ok=True)
-            for i, rgba in enumerate(rgba_frames):
+            for i, (frame, alpha) in enumerate(zip(frames, alphas)):
+                _check_encode_cancelled()
+                rgba = _compose_rgba(frame, alpha, premultiplied=False)
                 fg = rgba[:, :, :3]  # RGB only
-                out_path = fg_dir / f"fg_{i:06d}.png"
+                out_path = fg_dir / f"fg_{i:06d}{output_ext}"
                 self.encoder.encode_image(fg, out_path)
-            logger.info("Saved %s FG frames to %s", len(rgba_frames), fg_dir)
+            logger.info("Saved %s FG frames to %s", len(frames), fg_dir)
         
         # 2. Matte (Linear alpha) - 线性 alpha 遮罩
         if self.config.output_matte:
             matte_dir = output_dir / "Matte"
             matte_dir.mkdir(exist_ok=True)
             for i, alpha in enumerate(alphas):
+                _check_encode_cancelled()
                 matte = (alpha * 255).astype(np.uint8)
                 out_path = matte_dir / f"matte_{i:06d}.png"
                 self.encoder.encode_grayscale(matte, out_path)
@@ -296,28 +364,31 @@ class MattingPipeline:
         if self.config.output_comp:
             comp_dir = output_dir / "Comp"
             comp_dir.mkdir(exist_ok=True)
-            for i, rgba in enumerate(rgba_frames):
-                alpha = rgba[:, :, 3:4]
-                rgb = rgba[:, :, :3]
-                comp = rgb * alpha  # 预乘
-                out_path = comp_dir / f"comp_{i:06d}.png"
+            for i, (frame, alpha) in enumerate(zip(frames, alphas)):
+                _check_encode_cancelled()
+                rgba = _compose_rgba(frame, alpha, premultiply_rgb)
+                comp = rgba[:, :, :3]
+                out_path = comp_dir / f"comp_{i:06d}{output_ext}"
                 self.encoder.encode_image(comp, out_path)
-            logger.info("Saved %s comp frames to %s", len(rgba_frames), comp_dir)
+            logger.info("Saved %s comp frames to %s", len(frames), comp_dir)
         
         # 4. Processed (RGBA) - 处理后完整 RGBA
         if self.config.output_processed:
             processed_dir = output_dir / "Processed"
             processed_dir.mkdir(exist_ok=True)
-            for i, rgba in enumerate(rgba_frames):
-                out_path = processed_dir / f"processed_{i:06d}.png"
+            for i, (frame, alpha) in enumerate(zip(frames, alphas)):
+                _check_encode_cancelled()
+                rgba = _compose_rgba(frame, alpha, premultiply_rgb)
+                out_path = processed_dir / f"processed_{i:06d}{output_ext}"
                 self.encoder.encode_image(rgba, out_path)
-            logger.info("Saved %s processed RGBA frames to %s", len(rgba_frames), processed_dir)
+            logger.info("Saved %s processed RGBA frames to %s", len(frames), processed_dir)
         
         # 输出遮罩（可选）
         if self.config.output_mask:
             mask_dir = output_dir / "mask"
             mask_dir.mkdir(exist_ok=True)
             for i, alpha in enumerate(alphas):
+                _check_encode_cancelled()
                 mask = (alpha * 255).astype(np.uint8)
                 out_path = mask_dir / f"mask_{i:06d}.png"
                 self.encoder.encode_grayscale(mask, out_path)
@@ -328,5 +399,15 @@ class MattingPipeline:
         if callback:
             try:
                 callback(current, total, stage)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.exception(
+                    "Progress callback failed: current=%s total=%s stage=%s",
+                    current,
+                    total,
+                    stage,
+                )
+                if isinstance(exc, ProgressCallbackError):
+                    raise
+                raise ProgressCallbackError(
+                    f"Progress callback failed during {stage}: {exc}"
+                ) from exc

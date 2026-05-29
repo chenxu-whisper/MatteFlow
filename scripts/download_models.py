@@ -30,6 +30,8 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
 from matteflow.utils.model_paths import model_file, models_root
+from matteflow.utils.model_checker import validate_direct_model_file
+from matteflow.utils.model_downloads import download_file_atomically
 
 
 def download_gvm():
@@ -66,15 +68,17 @@ def download_matanyone2():
     print("模型大小: ~135 MB")
 
     try:
-        import urllib.request
-
         cache_dir = models_root()
         cache_dir.mkdir(parents=True, exist_ok=True)
         model_path = model_file("matanyone2.pth")
         url = "https://github.com/pq-yang/MatAnyone2/releases/download/v1.0.0/matanyone2.pth"
 
         print("开始下载...")
-        urllib.request.urlretrieve(url, model_path)
+        download_file_atomically(
+            url,
+            model_path,
+            validate=lambda path: validate_direct_model_file(path, "matanyone2.pth"),
+        )
 
         print("[OK] MatAnyone2 下载完成！")
         return True
@@ -95,11 +99,12 @@ def download_sam2():
 
         cache_dir = models_root()
         cache_dir.mkdir(parents=True, exist_ok=True)
+        repo_dir = cache_dir / "sam2-hiera-base-plus"
 
         print("开始下载...")
         snapshot_download(
             repo_id="facebook/sam2-hiera-base-plus",
-            cache_dir=cache_dir
+            local_dir=repo_dir,
         )
 
         print("[OK] SAM2 下载完成！")
@@ -143,8 +148,6 @@ def download_corridorkey():
     print("模型大小: ~383 MB")
 
     try:
-        import urllib.request
-
         model_dir = models_root()
         model_dir.mkdir(parents=True, exist_ok=True)
 
@@ -152,7 +155,11 @@ def download_corridorkey():
         url = "https://huggingface.co/nikopueringer/CorridorKey_v1.0/resolve/main/CorridorKey_v1.0.pth"
 
         print("开始下载...")
-        urllib.request.urlretrieve(url, model_path)
+        download_file_atomically(
+            url,
+            model_path,
+            validate=lambda path: validate_direct_model_file(path, "corridorkey.pth"),
+        )
         print(f"[OK] CorridorKey 下载完成！")
         return True
     except Exception as e:
@@ -168,8 +175,6 @@ def download_rvm():
     print("模型大小: ~15 MB")
 
     try:
-        import urllib.request
-
         model_dir = models_root()
         model_dir.mkdir(parents=True, exist_ok=True)
 
@@ -177,7 +182,11 @@ def download_rvm():
         url = "https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3.pth"
 
         print("开始下载...")
-        urllib.request.urlretrieve(url, model_path)
+        download_file_atomically(
+            url,
+            model_path,
+            validate=lambda path: validate_direct_model_file(path, "rvm_mobilenetv3.pth"),
+        )
         print(f"[OK] RVM 下载完成！")
         return True
     except Exception as e:

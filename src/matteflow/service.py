@@ -10,7 +10,7 @@ from typing import Any, Callable, Mapping, Optional
 
 from .config import BackgroundMode, MattingConfig, QualityMode
 from .diagnostics import from_exception
-from .errors import ProcessingError
+from .errors import JobCancelledError, MatteFlowError, ProcessingError
 
 ProgressCallback = Callable[[int, int, str], None]
 PipelineFactory = Callable[[MattingConfig], Any]
@@ -96,15 +96,14 @@ class MatteFlowService:
         cancel_check: Optional[Callable[[], bool]] = None,
     ) -> ProcessResult:
         """Run a processing job from an immutable parameter snapshot."""
-        config = self._build_config(params)
-        pipeline = self._pipeline_factory(config)
-
         try:
+            config = self._build_config(params)
+            pipeline = self._pipeline_factory(config)
             process_kwargs: dict[str, Any] = {"progress_callback": progress_callback}
             if cancel_check is not None:
                 process_kwargs["cancel_check"] = cancel_check
             raw_result = pipeline.process(params.input_path, params.output_dir, **process_kwargs)
-        except ProcessingError:
+        except MatteFlowError:
             raise
         except Exception as exc:
             raise ProcessingError(self._format_processing_error(exc)) from exc
@@ -134,13 +133,21 @@ class MatteFlowService:
     @staticmethod
     def _to_process_result(params: ProcessJobParams, raw_result: Mapping[str, Any]) -> ProcessResult:
         timings = raw_result.get("timings") or {}
+        frame_count = raw_result.get("frame_count")
+        if frame_count is None:
+            frame_count = raw_result.get("frames_processed", 0)
+
+        processing_time = raw_result.get("processing_time")
+        if processing_time is None:
+            processing_time = raw_result.get("elapsed_time", 0.0)
+
         return ProcessResult(
             success=True,
             input_path=params.input_path,
             output_dir=params.output_dir,
             background_mode=str(raw_result.get("background_mode", params.background_mode.value)),
-            frame_count=int(raw_result.get("frame_count", 0)),
-            processing_time=float(raw_result.get("processing_time", 0.0)),
+            frame_count=int(frame_count),
+            processing_time=float(processing_time),
             timings=MappingProxyType(copy.deepcopy(dict(timings))),
         )
 

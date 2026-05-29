@@ -2,8 +2,9 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
@@ -85,6 +86,7 @@ def test_process_video_returns_queued_status_when_another_job_is_running(monkeyp
     progress = FakeProgress()
     queue = GPUJobQueue()
     output_dir = tmp_path / "out"
+    Image.fromarray(np.zeros((2, 2, 3), dtype=np.uint8), mode="RGB").save(tmp_path / "input.png")
     running_job = queue.submit(
         GPUJob(
             job_type=JobType.PROCESS_MEDIA,
@@ -257,6 +259,7 @@ def test_process_video_drains_next_queued_jobs_after_current_job_finishes(monkey
     output_dir = tmp_path / "out"
     transparent_png = output_dir / "Processed" / "processed_000000.png"
     captured = {"processed_inputs": []}
+    Image.fromarray(np.zeros((2, 2, 3), dtype=np.uint8), mode="RGB").save(tmp_path / "input.png")
 
     class FakeService:
         def process(self, params, progress_callback=None, cancel_check=None):
@@ -301,7 +304,10 @@ def test_process_video_drains_next_queued_jobs_after_current_job_finishes(monkey
     monkeypatch.setattr(
         web_gui,
         "_create_preview_frames",
-        lambda output_dir: (np.zeros((2, 2, 3), dtype=np.uint8), np.zeros((2, 2, 4), dtype=np.uint8)),
+        lambda output_dir, input_path: (
+            np.zeros((2, 2, 3), dtype=np.uint8),
+            np.zeros((2, 2, 4), dtype=np.uint8),
+        ),
     )
     monkeypatch.setattr(web_gui, "_find_transparent_png_download", lambda output_dir: transparent_png)
 
@@ -313,10 +319,11 @@ def test_process_video_drains_next_queued_jobs_after_current_job_finishes(monkey
     )
 
     assert queue.running_job is None
-    assert queue.queued_snapshot == ()
-    assert len(queue.history_snapshot) == 2
-    assert [job.status for job in queue.history_snapshot] == [JobStatus.COMPLETED, JobStatus.COMPLETED]
-    assert captured["processed_inputs"] == ["input.png", "queued-next.png"]
+    assert len(queue.queued_snapshot) == 1
+    assert queue.queued_snapshot[0].input_path.name == "queued-next.png"
+    assert len(queue.history_snapshot) == 1
+    assert [job.status for job in queue.history_snapshot] == [JobStatus.COMPLETED]
+    assert captured["processed_inputs"] == ["input.png"]
     assert progress.calls == [(1.0, "encoding")]
     assert "完成" in result[2]
     assert result[5] == 4

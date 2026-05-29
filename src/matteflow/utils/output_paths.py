@@ -13,11 +13,18 @@ def resolve_project_output_dir(
     input_path: Path,
     project_root: Path,
     output_root: Path | None = None,
+    job_token: str | None = None,
 ) -> Path:
     output_root = output_root or (project_root / "temp" / "output")
     output_root.mkdir(parents=True, exist_ok=True)
 
     stem = sanitize_output_name(Path(input_path).stem)
+    if job_token:
+        token = sanitize_output_name(job_token)
+        candidate = output_root / f"{stem}_{token}"
+        candidate.mkdir(parents=True, exist_ok=True)
+        return candidate
+
     candidate = output_root / stem
 
     if not candidate.exists():
