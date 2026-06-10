@@ -26,11 +26,59 @@ class ColorDecontaminate:
 
     def _transparency_band(self, alpha: np.ndarray, low: float = 0.02, high: float = 0.75) -> np.ndarray:
         return (alpha > low) & (alpha < high)
+
+    def _estimate_green_screen_color(self, frame: np.ndarray, alpha: np.ndarray) -> np.ndarray:
+        if self.config.key_color is not None:
+            return np.array(self.config.key_color, dtype=np.float32)
+
+        frame_f = frame.astype(np.float32, copy=False)
+        h, w = alpha.shape
+        border = max(min(min(h, w) // 6, 96), 1)
+        border_mask = np.zeros_like(alpha, dtype=bool)
+        border_mask[:border, :] = True
+        border_mask[-border:, :] = True
+        border_mask[:, :border] = True
+        border_mask[:, -border:] = True
+
+        bg_mask = alpha <= 0.02
+        if int(bg_mask.sum()) < 64:
+            bg_mask = alpha <= 0.08
+        bg_mask = bg_mask & border_mask
+        if int(bg_mask.sum()) < 64:
+            bg_mask = border_mask
+
+        r, g, b = frame_f[:, :, 0], frame_f[:, :, 1], frame_f[:, :, 2]
+        green_score = g - np.maximum(r, b)
+        green_candidates = bg_mask & (green_score > 10.0)
+        if int(green_candidates.sum()) >= 32:
+            pixels = frame_f[green_candidates]
+        else:
+            pixels = frame_f[bg_mask]
+
+        if pixels.size == 0:
+            return np.array([0.0, 255.0, 0.0], dtype=np.float32)
+
+        return np.median(pixels, axis=0).astype(np.float32)
+
+    def _recover_green_screen_foreground(
+        self,
+        frame: np.ndarray,
+        alpha: np.ndarray,
+        screen_rgb: np.ndarray,
+    ) -> np.ndarray:
+        frame_f = frame.astype(np.float32, copy=False)
+        alpha_f = np.clip(alpha.astype(np.float32, copy=False), 0.0, 1.0)
+        safe_alpha = np.maximum(alpha_f, 0.18)
+        screen = screen_rgb.astype(np.float32, copy=False).reshape(1, 1, 3)
+        recovered = (frame_f - (1.0 - alpha_f)[..., np.newaxis] * screen) / safe_alpha[..., np.newaxis]
+        return np.clip(recovered, 0.0, 255.0)
     
     def _remove_green_spill(self, frame: np.ndarray, alpha: np.ndarray) -> np.ndarray:
         """去除绿溢色 - 保守版：只处理明显绿边，保护白色/浅色区域"""
         result = frame.astype(np.float32)
         r, g, b = result[:, :, 0], result[:, :, 1], result[:, :, 2]
+        screen_rgb = self._estimate_green_screen_color(frame, alpha)
+        recovered_fg = self._recover_green_screen_foreground(frame, alpha, screen_rgb)
         
         strength = self.config.green_despill_strength
         
@@ -98,16 +146,71 @@ class ColorDecontaminate:
         compensation = despill * 0.5
         r_corrected = r + compensation
         b_corrected = b + compensation
+
+        # 6.5 对中高 alpha 的混色边做真正的前景反混色恢复。
+        # 仅在存在明显绿色屏幕污染时启用，避免改坏正常蓝紫辉光。
+        screen_mix_score = np.maximum(0.0, g - r) + 0.5 * np.maximum(0.0, g - b)
+        screen_mix = np.clip((screen_mix_score - 12.0) / 64.0, 0.0, 1.0)
+        unmix_zone = (alpha > 0.18) & (alpha < 0.88) & (screen_mix > 0.0)
+        unmix_weight = screen_mix * np.clip((0.95 - alpha) / 0.20, 0.70, 1.0)
+        unmix_weight = np.where(unmix_zone, unmix_weight, 0.0).astype(np.float32)
+        r_corrected = r_corrected * (1.0 - unmix_weight) + recovered_fg[:, :, 0] * unmix_weight
+        g_corrected = g_corrected * (1.0 - unmix_weight) + recovered_fg[:, :, 1] * unmix_weight
+        b_corrected = b_corrected * (1.0 - unmix_weight) + recovered_fg[:, :, 2] * unmix_weight
         
         # 7. 半透明辉光补亮：AI/绿幕融合会保留 alpha，但 RGB 仍可能是暗背景色，
         # 合成到棋盘或任意背景上会表现为黑边。只修低亮度半透明区，避开主体白色区域。
         corrected_brightness = (r_corrected + g_corrected + b_corrected) / 3.0
-        transparency_mask = self._transparency_band(alpha, 0.08, 0.75)
-        dark_glow = transparency_mask & (corrected_brightness < 95) & (~white_mask)
-        lift = np.clip((115 - corrected_brightness) * 0.9, 0, 65) * dark_glow
+        transparency_mask = self._transparency_band(alpha, 0.02, 0.78)
+        dark_glow = transparency_mask & (corrected_brightness < 105) & (~white_mask)
+        lift = np.clip((122 - corrected_brightness) * 0.9, 0, 72) * dark_glow
         r_corrected = r_corrected + lift * 1.20
         g_corrected = g_corrected + lift * 0.12
         b_corrected = b_corrected + lift * 1.05
+
+        # 8. 亮青色辉光中仍可能混入绿幕色。当前规则主要处理纯绿边，
+        # 这里额外中和亮的青色外缘，避免白环外侧残留一圈发绿的 teal halo。
+        corrected_brightness = (r_corrected + g_corrected + b_corrected) / 3.0
+        corrected_chroma = np.maximum.reduce([r_corrected, g_corrected, b_corrected]) - np.minimum.reduce(
+            [r_corrected, g_corrected, b_corrected]
+        )
+        white_ring_cleanup_strength = float(
+            np.clip(getattr(self.config, "white_ring_cleanup_strength", 1.0), 0.0, 2.0)
+        )
+
+        bright_teal_haze = (
+            transparency_mask
+            & (corrected_brightness > 135)
+            & (corrected_chroma < 90)
+            & (g_corrected > r_corrected + 10)
+            & (b_corrected > r_corrected + 10)
+        )
+        teal_gap = np.maximum(0, np.minimum(g_corrected - r_corrected, b_corrected - r_corrected))
+        teal_cleanup = white_ring_cleanup_strength * bright_teal_haze
+        r_corrected = r_corrected + teal_gap * 0.50 * teal_cleanup
+        g_corrected = g_corrected - teal_gap * 0.18 * teal_cleanup
+
+        # 9. 白环外侧的混色边 alpha 往往并不低，单靠半透明规则不够。
+        # 仅在亮白环的邻接带里继续中和偏青绿色，避免外沿残留一圈绿边。
+        bright_ring = (alpha > 0.92) & (corrected_brightness > 210) & (corrected_chroma < 55)
+        if np.any(bright_ring):
+            ring_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+            ring_neighbor = cv2.dilate(bright_ring.astype(np.uint8), ring_kernel, iterations=1).astype(bool)
+            ring_neighbor &= ~bright_ring
+            ring_teal_haze = (
+                ring_neighbor
+                & (alpha > 0.05)
+                & (alpha < 0.88)
+                & (corrected_chroma < 110)
+                & (g_corrected > r_corrected + 10)
+                & (b_corrected > r_corrected + 10)
+            )
+            ring_teal_gap = np.maximum(
+                0, np.minimum(g_corrected - r_corrected, b_corrected - r_corrected)
+            )
+            ring_cleanup = white_ring_cleanup_strength * ring_teal_haze
+            r_corrected = r_corrected + ring_teal_gap * 0.55 * ring_cleanup
+            g_corrected = g_corrected - ring_teal_gap * 0.20 * ring_cleanup
 
         result[:, :, 0] = np.clip(r_corrected, 0, 255)
         result[:, :, 1] = np.clip(g_corrected, 0, 255)

@@ -124,6 +124,8 @@ class BiRefNetMatte:
             alpha = pred.get('out', pred.get('alpha', None))
         else:
             alpha = pred
+        if isinstance(alpha, (list, tuple)):
+            alpha = next((item for item in reversed(alpha) if item is not None), None)
         
         if alpha is None:
             # 如果输出结构不对，返回全 1
