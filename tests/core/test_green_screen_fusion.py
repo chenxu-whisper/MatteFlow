@@ -730,6 +730,8 @@ def test_green_screen_real_frame_3_competitive_ownership_smoke():
     assert float(debug["final_alpha"][subject_holes].mean()) >= 0.80
     assert float(debug["ownership_effect"][bright_effect_smoke].mean()) >= 0.80
     assert float(debug["final_alpha"][bright_effect_smoke].mean()) >= 0.55
+    assert int(debug["background_evidence"][left_blue_background_smoke].sum()) >= 50_000
+    assert int(debug["background_evidence_owns"][left_blue_background_smoke].sum()) >= 20_000
     assert float(debug["ownership_background"][left_blue_background_smoke].mean()) >= 0.55
     assert float((merged[left_blue_background_smoke] > 0.35).mean()) <= 0.25
 
