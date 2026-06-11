@@ -100,7 +100,9 @@ class GreenScreenCompetitiveLayerComposer:
                 f"{name}.confidence shape {confidence_shape} does not match alpha shape {shape}"
             )
         if expected_shape is not None and shape != expected_shape:
-            raise ValueError(f"{name}.alpha shape {shape} does not match {expected_shape}")
+            raise ValueError(
+                f"{name}.alpha shape {shape} does not match subject alpha shape {expected_shape}"
+            )
         return shape
 
     @staticmethod

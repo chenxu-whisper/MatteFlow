@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
@@ -47,3 +48,104 @@ def test_green_screen_competitive_layer_composer_shape_contract():
         "ownership_background",
     }
     assert all(layer.shape == (2, 3) for layer in result.debug_layers.values())
+
+
+def test_minimal_compose_contract_uses_confidence_winner_values_and_float32_outputs():
+    subject = LayerCandidate(
+        alpha=np.array([[0.2, 0.8], [0.4, 0.9]], dtype=np.float64),
+        confidence=np.array([[0.9, 0.1], [0.0, 0.0]], dtype=np.float64),
+    )
+    effect = LayerCandidate(
+        alpha=np.array([[0.7, 0.6], [0.5, 0.3]], dtype=np.float64),
+        confidence=np.array([[0.2, 0.8], [0.0, 1.0]], dtype=np.float64),
+    )
+
+    result = GreenScreenCompetitiveLayerComposer().compose(subject=subject, effect=effect)
+
+    assert np.array_equal(
+        result.ownership.subject,
+        np.array([[1.0, 0.0], [0.0, 0.0]], dtype=np.float32),
+    )
+    assert np.array_equal(
+        result.ownership.effect,
+        np.array([[0.0, 1.0], [0.0, 1.0]], dtype=np.float32),
+    )
+    assert np.array_equal(
+        result.ownership.background,
+        np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float32),
+    )
+    assert np.allclose(
+        result.subject_alpha_out,
+        np.array([[0.2, 0.0], [0.0, 0.0]], dtype=np.float32),
+    )
+    assert np.allclose(
+        result.effect_alpha_out,
+        np.array([[0.0, 0.6], [0.0, 0.3]], dtype=np.float32),
+    )
+    assert np.allclose(
+        result.final_alpha,
+        np.array([[0.2, 0.6], [0.0, 0.3]], dtype=np.float32),
+    )
+    for layer in (
+        result.final_alpha,
+        result.subject_alpha_out,
+        result.effect_alpha_out,
+        result.ownership.subject,
+        result.ownership.effect,
+        result.ownership.background,
+        *result.debug_layers.values(),
+    ):
+        assert layer.dtype == np.float32
+
+
+def test_minimal_compose_contract_clips_alpha_and_confidence_inputs():
+    subject = LayerCandidate(
+        alpha=np.array([[1.5, -0.5]], dtype=np.float64),
+        confidence=np.array([[2.0, -1.0]], dtype=np.float64),
+    )
+    effect = LayerCandidate(
+        alpha=np.array([[-0.25, 1.25]], dtype=np.float64),
+        confidence=np.array([[-0.5, 2.0]], dtype=np.float64),
+    )
+
+    result = GreenScreenCompetitiveLayerComposer().compose(subject=subject, effect=effect)
+
+    assert np.array_equal(result.debug_layers["subject_alpha"], np.array([[1.0, 0.0]], dtype=np.float32))
+    assert np.array_equal(result.debug_layers["subject_confidence"], np.array([[1.0, 0.0]], dtype=np.float32))
+    assert np.array_equal(result.debug_layers["effect_alpha"], np.array([[0.0, 1.0]], dtype=np.float32))
+    assert np.array_equal(result.debug_layers["effect_confidence"], np.array([[0.0, 1.0]], dtype=np.float32))
+    assert np.array_equal(result.final_alpha, np.array([[1.0, 1.0]], dtype=np.float32))
+
+
+def test_minimal_compose_contract_rejects_shape_mismatch():
+    subject = LayerCandidate(
+        alpha=np.zeros((2, 2), dtype=np.float32),
+        confidence=np.zeros((2, 2), dtype=np.float32),
+    )
+    bad_effect = LayerCandidate(
+        alpha=np.zeros((1, 2), dtype=np.float32),
+        confidence=np.zeros((1, 2), dtype=np.float32),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"effect\.alpha shape \(1, 2\) does not match subject alpha shape \(2, 2\)",
+    ):
+        GreenScreenCompetitiveLayerComposer().compose(subject=subject, effect=bad_effect)
+
+
+def test_minimal_compose_contract_rejects_candidate_confidence_shape_mismatch():
+    subject = LayerCandidate(
+        alpha=np.zeros((2, 2), dtype=np.float32),
+        confidence=np.zeros((1, 2), dtype=np.float32),
+    )
+    effect = LayerCandidate(
+        alpha=np.zeros((2, 2), dtype=np.float32),
+        confidence=np.zeros((2, 2), dtype=np.float32),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"subject\.confidence shape \(1, 2\) does not match alpha shape \(2, 2\)",
+    ):
+        GreenScreenCompetitiveLayerComposer().compose(subject=subject, effect=effect)
