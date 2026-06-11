@@ -544,7 +544,6 @@ class HybridMatte:
             from .green_screen_layer_composer import GreenScreenCompetitiveLayerComposer, LayerCandidate
 
             composer = GreenScreenCompetitiveLayerComposer()
-            self.last_green_screen_layer_debug = []
 
         merged: List[np.ndarray] = []
         frame_iter = frames if frames is not None else [None] * len(base_alphas)
@@ -630,7 +629,7 @@ class HybridMatte:
                     ),
                 )
                 fused_alpha = composed.final_alpha
-                self.last_green_screen_layer_debug.append(composed.debug_layers)
+                self.last_green_screen_layer_debug = composed.debug_layers
             else:
                 fused_alpha = self._soft_fuse_layers(solid_alpha, effect_alpha)
             self._log_transparency_fusion_stats("green_screen", solid_alpha, effect_alpha, fused_alpha)
