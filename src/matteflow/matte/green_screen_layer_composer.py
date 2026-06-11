@@ -9,10 +9,11 @@ import numpy as np
 
 @dataclass(frozen=True)
 class LayerCandidate:
-    """Candidate layer alpha and its per-pixel confidence."""
+    """Candidate layer alpha, confidence, and optional ownership evidence."""
 
     alpha: np.ndarray
     confidence: np.ndarray
+    evidence: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -51,10 +52,21 @@ class GreenScreenCompetitiveLayerComposer:
         effect_alpha = self._as_alpha(effect.alpha)
         subject_confidence = self._as_alpha(subject.confidence)
         effect_confidence = self._as_alpha(effect.confidence)
+        subject_evidence = self._candidate_evidence(subject, subject_confidence)
+        effect_evidence = self._candidate_evidence(effect, effect_confidence)
 
-        subject_owns = subject_confidence >= effect_confidence
-        effect_owns = (~subject_owns) & (effect_confidence > 0.0)
-        background_owns = (subject_confidence <= 0.0) & (effect_confidence <= 0.0)
+        effect_over_subject_evidence = (
+            (effect_alpha > 0.0)
+            & (effect_evidence > 0.0)
+            & (effect_evidence > subject_evidence)
+        )
+        subject_owns = (subject_confidence >= effect_confidence) & (~effect_over_subject_evidence)
+        effect_owns = effect_over_subject_evidence | ((~subject_owns) & (effect_confidence > 0.0))
+        background_owns = (
+            (subject_confidence <= 0.0)
+            & (effect_confidence <= 0.0)
+            & (~effect_over_subject_evidence)
+        )
         subject_owns = subject_owns & (~background_owns)
 
         subject_alpha_out = np.where(subject_owns, subject_alpha, 0.0).astype(np.float32)
@@ -70,6 +82,9 @@ class GreenScreenCompetitiveLayerComposer:
             "subject_confidence": subject_confidence,
             "effect_alpha": effect_alpha,
             "effect_confidence": effect_confidence,
+            "subject_evidence": subject_evidence,
+            "effect_evidence": effect_evidence,
+            "effect_over_subject_evidence": effect_over_subject_evidence.astype(np.float32),
             "subject_alpha_out": subject_alpha_out,
             "effect_alpha_out": effect_alpha_out,
             "final_alpha": final_alpha,
@@ -93,11 +108,20 @@ class GreenScreenCompetitiveLayerComposer:
     ) -> tuple[int, int]:
         shape = tuple(np.asarray(candidate.alpha).shape)
         confidence_shape = tuple(np.asarray(candidate.confidence).shape)
+        evidence_shape = (
+            None
+            if candidate.evidence is None
+            else tuple(np.asarray(candidate.evidence).shape)
+        )
         if len(shape) != 2:
             raise ValueError(f"{name}.alpha must be 2D, got shape {shape}")
         if confidence_shape != shape:
             raise ValueError(
                 f"{name}.confidence shape {confidence_shape} does not match alpha shape {shape}"
+            )
+        if evidence_shape is not None and evidence_shape != shape:
+            raise ValueError(
+                f"{name}.evidence shape {evidence_shape} does not match alpha shape {shape}"
             )
         if expected_shape is not None and shape != expected_shape:
             raise ValueError(
@@ -108,6 +132,16 @@ class GreenScreenCompetitiveLayerComposer:
     @staticmethod
     def _as_alpha(value: np.ndarray) -> np.ndarray:
         return np.clip(np.asarray(value, dtype=np.float32), 0.0, 1.0)
+
+    @classmethod
+    def _candidate_evidence(
+        cls,
+        candidate: LayerCandidate,
+        fallback: np.ndarray,
+    ) -> np.ndarray:
+        if candidate.evidence is None:
+            return fallback
+        return cls._as_alpha(candidate.evidence)
 
 __all__ = [
     "CompetitiveLayerResult",

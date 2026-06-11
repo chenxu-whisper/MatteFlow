@@ -40,6 +40,9 @@ def test_green_screen_competitive_layer_composer_shape_contract():
         "subject_confidence",
         "effect_alpha",
         "effect_confidence",
+        "subject_evidence",
+        "effect_evidence",
+        "effect_over_subject_evidence",
         "subject_alpha_out",
         "effect_alpha_out",
         "final_alpha",
@@ -98,6 +101,26 @@ def test_minimal_compose_contract_uses_confidence_winner_values_and_float32_outp
         assert layer.dtype == np.float32
 
 
+def test_effect_over_subject_evidence_routes_luminous_effect_out_of_semantic_subject_bleed():
+    subject = LayerCandidate(
+        alpha=np.array([[0.92, 0.85]], dtype=np.float32),
+        confidence=np.array([[0.95, 0.90]], dtype=np.float32),
+        evidence=np.array([[0.20, 0.88]], dtype=np.float32),
+    )
+    effect = LayerCandidate(
+        alpha=np.array([[0.84, 0.72]], dtype=np.float32),
+        confidence=np.array([[0.60, 0.50]], dtype=np.float32),
+        evidence=np.array([[0.91, 0.40]], dtype=np.float32),
+    )
+
+    result = GreenScreenCompetitiveLayerComposer().compose(subject=subject, effect=effect)
+
+    assert np.array_equal(result.ownership.effect, np.array([[1.0, 0.0]], dtype=np.float32))
+    assert np.array_equal(result.ownership.subject, np.array([[0.0, 1.0]], dtype=np.float32))
+    assert np.allclose(result.effect_alpha_out, np.array([[0.84, 0.0]], dtype=np.float32))
+    assert np.allclose(result.subject_alpha_out, np.array([[0.0, 0.85]], dtype=np.float32))
+
+
 def test_minimal_compose_contract_clips_alpha_and_confidence_inputs():
     subject = LayerCandidate(
         alpha=np.array([[1.5, -0.5]], dtype=np.float64),
@@ -147,5 +170,23 @@ def test_minimal_compose_contract_rejects_candidate_confidence_shape_mismatch():
     with pytest.raises(
         ValueError,
         match=r"subject\.confidence shape \(1, 2\) does not match alpha shape \(2, 2\)",
+    ):
+        GreenScreenCompetitiveLayerComposer().compose(subject=subject, effect=effect)
+
+
+def test_minimal_compose_contract_rejects_candidate_evidence_shape_mismatch():
+    subject = LayerCandidate(
+        alpha=np.zeros((2, 2), dtype=np.float32),
+        confidence=np.zeros((2, 2), dtype=np.float32),
+        evidence=np.zeros((1, 2), dtype=np.float32),
+    )
+    effect = LayerCandidate(
+        alpha=np.zeros((2, 2), dtype=np.float32),
+        confidence=np.zeros((2, 2), dtype=np.float32),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"subject\.evidence shape \(1, 2\) does not match alpha shape \(2, 2\)",
     ):
         GreenScreenCompetitiveLayerComposer().compose(subject=subject, effect=effect)
