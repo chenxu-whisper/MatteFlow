@@ -43,6 +43,7 @@ def test_green_screen_competitive_layer_composer_shape_contract():
         "subject_evidence",
         "effect_evidence",
         "background_evidence",
+        "background_evidence_owns",
         "effect_over_subject_evidence",
         "background_suppression",
         "subject_alpha_out",
@@ -175,6 +176,31 @@ def test_frame_aware_background_evidence_overrides_competing_subject_and_effect_
         background_evidence,
     )
     assert np.allclose(result.final_alpha, np.array([[0.0, 0.82]], dtype=np.float32))
+
+
+def test_background_evidence_does_not_override_high_confidence_subject_or_effect():
+    subject = LayerCandidate(
+        alpha=np.array([[0.93, 0.20]], dtype=np.float32),
+        confidence=np.array([[0.94, 0.10]], dtype=np.float32),
+        evidence=np.array([[0.95, 0.10]], dtype=np.float32),
+    )
+    effect = LayerCandidate(
+        alpha=np.array([[0.20, 0.88]], dtype=np.float32),
+        confidence=np.array([[0.10, 0.90]], dtype=np.float32),
+        evidence=np.array([[0.10, 0.92]], dtype=np.float32),
+    )
+    background_evidence = np.array([[1.0, 1.0]], dtype=np.float32)
+
+    result = GreenScreenCompetitiveLayerComposer().compose(
+        subject=subject,
+        effect=effect,
+        background_evidence=background_evidence,
+    )
+
+    assert np.array_equal(result.ownership.background, np.array([[0.0, 0.0]], dtype=np.float32))
+    assert np.array_equal(result.ownership.subject, np.array([[1.0, 0.0]], dtype=np.float32))
+    assert np.array_equal(result.ownership.effect, np.array([[0.0, 1.0]], dtype=np.float32))
+    assert np.allclose(result.final_alpha, np.array([[0.93, 0.88]], dtype=np.float32))
 
 
 def test_minimal_compose_contract_clips_alpha_and_confidence_inputs():

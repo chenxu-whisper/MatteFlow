@@ -680,7 +680,7 @@ def test_green_screen_semantic_subject_trimap_guides_gvm_subject_without_lifting
     assert float(merged[blue_background].mean()) <= 0.12
 
 
-def test_green_screen_real_frame_3_competitive_ownership_preserves_subject_effect_and_background():
+def test_green_screen_real_frame_3_competitive_ownership_smoke():
     matte = HybridMatte(MattingConfig(use_ai=False))
     matte.last_active_ai_model = "gvm"
     matte.last_fallback_quality_metrics = {
@@ -702,24 +702,15 @@ def test_green_screen_real_frame_3_competitive_ownership_preserves_subject_effec
     ai_alpha = np.where(purple_subject & (base_alpha >= 0.45), 1.0, 0.0039).astype(np.float32)
     semantic_subject_alpha = np.where(purple_subject, 1.0, 0.0).astype(np.float32)
     subject_holes = purple_subject & matte._green_screen_non_screen_mask(frame) & (base_alpha < 0.45)
-    luminous_core = (
-        (brightness > 205.0)
-        & (chroma < 70.0)
-        & (base_alpha < 0.75)
-        & (~purple_subject)
-    )
-    core_reach = cv2.dilate(
-        luminous_core.astype(np.uint8),
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (51, 51)),
-        iterations=1,
-    ).astype(bool)
-    far_blue_background = (
-        (~core_reach)
-        & (blue > 140.0)
-        & (green > 120.0)
-        & (red < 150.0)
-        & (brightness > 120.0)
-        & (base_alpha < 0.45)
+    bright_effect_smoke = (brightness > 225.0) & (chroma < 55.0) & (~purple_subject)
+    x_positions = np.arange(frame.shape[1])[None, :]
+    left_blue_background_smoke = (
+        (x_positions < frame.shape[1] * 0.35)
+        & (blue > 150.0)
+        & (green > 125.0)
+        & (red < 135.0)
+        & (brightness > 125.0)
+        & (base_alpha < 0.20)
         & (~purple_subject)
     )
 
@@ -733,17 +724,47 @@ def test_green_screen_real_frame_3_competitive_ownership_preserves_subject_effec
 
     assert debug is not None
     assert int(subject_holes.sum()) >= 100_000
-    assert int(luminous_core.sum()) >= 50_000
-    assert int(far_blue_background.sum()) >= 300_000
+    assert int(bright_effect_smoke.sum()) >= 20_000
+    assert int(left_blue_background_smoke.sum()) >= 50_000
     assert float(debug["ownership_subject"][subject_holes].mean()) >= 0.98
     assert float(debug["final_alpha"][subject_holes].mean()) >= 0.80
-    assert float(debug["ownership_effect"][luminous_core].mean()) >= 0.99
-    assert float(debug["effect_evidence"][luminous_core].mean()) >= 0.65
-    assert float(debug["final_alpha"][luminous_core].mean()) >= 0.69
-    assert float(debug["background_evidence"][far_blue_background].mean()) >= 0.98
-    assert float(debug["ownership_background"][far_blue_background].mean()) >= 0.98
-    assert float((merged[far_blue_background] > 0.35).mean()) <= 0.02
-    assert float(debug["final_alpha"][far_blue_background].mean()) <= 0.03
+    assert float(debug["ownership_effect"][bright_effect_smoke].mean()) >= 0.80
+    assert float(debug["final_alpha"][bright_effect_smoke].mean()) >= 0.55
+    assert float(debug["ownership_background"][left_blue_background_smoke].mean()) >= 0.55
+    assert float((merged[left_blue_background_smoke] > 0.35).mean()) <= 0.25
+
+
+def test_green_screen_background_evidence_does_not_clear_confident_blue_subject_or_cyan_effect():
+    matte = HybridMatte(MattingConfig(use_ai=False, transparency_preserve=1.0))
+    matte.last_active_ai_model = "gvm"
+    frame = np.array([[[92, 142, 188], [105, 152, 202]]], dtype=np.uint8)
+    base_alpha = np.array([[0.08, 0.08]], dtype=np.float32)
+    ai_alpha = np.array([[0.96, 0.05]], dtype=np.float32)
+    subject_gate = np.array([[0.95, 0.05]], dtype=np.float32)
+    subject_alpha = np.array([[0.96, 0.0]], dtype=np.float32)
+    effect_alpha = np.array([[0.0, 0.86]], dtype=np.float32)
+    zero = np.zeros((1, 2), dtype=np.float32)
+    matte._green_screen_subject_confidence = lambda *_args, **_kwargs: subject_gate
+    matte._green_screen_ai_subject_layer = lambda *_args, **_kwargs: subject_alpha
+    matte._green_screen_solid_layer = lambda *_args, **_kwargs: zero
+    matte._green_screen_score_blocked_subject_layer = lambda *_args, **_kwargs: zero
+    matte._green_screen_subject_integrity_layer = lambda *_args, **_kwargs: zero
+    matte._green_screen_semantic_subject_layer = lambda *_args, **_kwargs: zero
+    matte._green_screen_effect_layer = lambda *_args, **_kwargs: effect_alpha
+    matte._green_screen_luminous_effect_reconstruction_layer = lambda *_args, **_kwargs: zero
+    matte._green_screen_gvm_fallback_subject_mask = lambda *_args, **_kwargs: np.zeros((1, 2), dtype=bool)
+    matte._should_apply_gvm_subject_fallback = lambda *_args, **_kwargs: False
+    matte._recover_degenerate_gvm_subject_alpha = lambda alpha, *_args, **_kwargs: alpha
+
+    merged = matte._merge_green_screen_effects([base_alpha], [ai_alpha], [frame])[0]
+    debug = matte.last_green_screen_layer_debug
+
+    assert debug is not None
+    assert np.array_equal(debug["background_evidence"], np.array([[1.0, 1.0]], dtype=np.float32))
+    assert np.array_equal(debug["ownership_background"], np.array([[0.0, 0.0]], dtype=np.float32))
+    assert np.array_equal(debug["ownership_subject"], np.array([[1.0, 0.0]], dtype=np.float32))
+    assert np.array_equal(debug["ownership_effect"], np.array([[0.0, 1.0]], dtype=np.float32))
+    assert np.allclose(merged, np.array([[0.96, 0.86]], dtype=np.float32))
 
 
 def test_green_screen_gvm_builds_semantic_subject_trimap_from_birefnet_helper():

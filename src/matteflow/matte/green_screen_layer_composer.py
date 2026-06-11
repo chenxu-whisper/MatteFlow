@@ -41,6 +41,9 @@ class GreenScreenCompetitiveLayerComposer:
 
     _BACKGROUND_SUBJECT_SUPPORT_MAX = 0.20
     _BACKGROUND_EFFECT_EVIDENCE_MAX = 0.35
+    _BACKGROUND_EVIDENCE_MIN = 0.50
+    _BACKGROUND_EVIDENCE_SUBJECT_SUPPORT_MAX = 0.60
+    _BACKGROUND_EVIDENCE_EFFECT_SUPPORT_MAX = 0.60
 
     def compose(
         self,
@@ -72,6 +75,11 @@ class GreenScreenCompetitiveLayerComposer:
             (subject_support <= self._BACKGROUND_SUBJECT_SUPPORT_MAX)
             & (effect_support <= self._BACKGROUND_EFFECT_EVIDENCE_MAX)
         )
+        background_evidence_owns = (
+            (background_evidence >= self._BACKGROUND_EVIDENCE_MIN)
+            & (subject_support <= self._BACKGROUND_EVIDENCE_SUBJECT_SUPPORT_MAX)
+            & (effect_support <= self._BACKGROUND_EVIDENCE_EFFECT_SUPPORT_MAX)
+        )
 
         effect_over_subject_evidence = (
             (effect_alpha > 0.0)
@@ -87,7 +95,7 @@ class GreenScreenCompetitiveLayerComposer:
                 & (~effect_over_subject_evidence)
             )
             | background_suppression
-            | (background_evidence >= 0.50)
+            | background_evidence_owns
         )
         subject_owns = subject_owns & (~background_owns)
         effect_owns = effect_owns & (~background_owns)
@@ -108,6 +116,7 @@ class GreenScreenCompetitiveLayerComposer:
             "subject_evidence": subject_evidence,
             "effect_evidence": effect_evidence,
             "background_evidence": background_evidence,
+            "background_evidence_owns": background_evidence_owns.astype(np.float32),
             "effect_over_subject_evidence": effect_over_subject_evidence.astype(np.float32),
             "background_suppression": background_suppression.astype(np.float32),
             "subject_alpha_out": subject_alpha_out,
