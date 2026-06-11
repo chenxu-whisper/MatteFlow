@@ -1,6 +1,5 @@
 import sys
 from pathlib import Path
-from dataclasses import is_dataclass
 
 import numpy as np
 
@@ -15,72 +14,36 @@ from matteflow.matte.green_screen_layer_composer import (
 )
 
 
-def test_competitive_layer_contract_types_are_dataclasses():
-    assert is_dataclass(LayerCandidate)
-    assert is_dataclass(LayerOwnership)
-    assert is_dataclass(CompetitiveLayerResult)
-
-
-def test_debug_shape_contract_records_candidate_ownership_and_result_shapes():
-    candidate = LayerCandidate(
-        name="subject",
-        alpha=np.zeros((2, 3), dtype=np.float32),
-        debug={"source": "ai"},
+def test_green_screen_competitive_layer_composer_shape_contract():
+    subject = LayerCandidate(
+        alpha=np.array([[1.0, 0.8, 0.0], [0.6, 0.2, 0.0]], dtype=np.float32),
+        confidence=np.array([[1.0, 0.9, 0.0], [0.8, 0.4, 0.0]], dtype=np.float32),
     )
-    ownership = LayerOwnership(
-        owner=np.full((2, 3), "subject", dtype=object),
-        confidence=np.ones((2, 3), dtype=np.float32),
-    )
-    result = CompetitiveLayerResult(
-        alpha=np.ones((2, 3), dtype=np.float32),
-        ownership=ownership,
-        candidates=(candidate,),
+    effect = LayerCandidate(
+        alpha=np.array([[0.0, 0.3, 0.9], [0.2, 0.4, 0.7]], dtype=np.float32),
+        confidence=np.array([[0.0, 0.5, 1.0], [0.3, 0.6, 0.9]], dtype=np.float32),
     )
 
-    contract = result.debug_shape_contract()
+    result = GreenScreenCompetitiveLayerComposer().compose(subject=subject, effect=effect)
 
-    assert contract == {
-        "alpha": (2, 3),
-        "ownership.owner": (2, 3),
-        "ownership.confidence": (2, 3),
-        "candidates.subject.alpha": (2, 3),
+    assert isinstance(result, CompetitiveLayerResult)
+    assert result.final_alpha.shape == (2, 3)
+    assert result.subject_alpha_out.shape == (2, 3)
+    assert result.effect_alpha_out.shape == (2, 3)
+    assert isinstance(result.ownership, LayerOwnership)
+    assert result.ownership.subject.shape == (2, 3)
+    assert result.ownership.effect.shape == (2, 3)
+    assert result.ownership.background.shape == (2, 3)
+    assert set(result.debug_layers) == {
+        "subject_alpha",
+        "subject_confidence",
+        "effect_alpha",
+        "effect_confidence",
+        "subject_alpha_out",
+        "effect_alpha_out",
+        "final_alpha",
+        "ownership_subject",
+        "ownership_effect",
+        "ownership_background",
     }
-
-
-def test_competitive_layer_composer_validates_debug_shape_contract():
-    composer = GreenScreenCompetitiveLayerComposer()
-    candidate = LayerCandidate("subject", np.zeros((2, 3), dtype=np.float32))
-    ownership = LayerOwnership(
-        owner=np.full((2, 3), "subject", dtype=object),
-        confidence=np.ones((2, 3), dtype=np.float32),
-    )
-    result = CompetitiveLayerResult(
-        alpha=np.ones((2, 3), dtype=np.float32),
-        ownership=ownership,
-        candidates=(candidate,),
-    )
-
-    assert composer.validate_debug_shape_contract(result) == result
-
-
-def test_debug_shape_contract_rejects_mismatched_candidate_shape():
-    composer = GreenScreenCompetitiveLayerComposer()
-    candidate = LayerCandidate("subject", np.zeros((1, 3), dtype=np.float32))
-    ownership = LayerOwnership(
-        owner=np.full((2, 3), "subject", dtype=object),
-        confidence=np.ones((2, 3), dtype=np.float32),
-    )
-    result = CompetitiveLayerResult(
-        alpha=np.ones((2, 3), dtype=np.float32),
-        ownership=ownership,
-        candidates=(candidate,),
-    )
-
-    try:
-        composer.validate_debug_shape_contract(result)
-    except ValueError as exc:
-        assert "candidates.subject.alpha" in str(exc)
-        assert "(1, 3)" in str(exc)
-        assert "(2, 3)" in str(exc)
-    else:
-        raise AssertionError("Expected mismatched candidate shape to raise ValueError")
+    assert all(layer.shape == (2, 3) for layer in result.debug_layers.values())
