@@ -697,6 +697,69 @@ def test_green_screen_gvm_builds_semantic_subject_trimap_from_birefnet_helper():
     assert float(semantic_alphas[0].mean()) == 0.75
 
 
+def test_green_screen_gvm_merge_uses_competitive_layer_composer_and_records_debug():
+    matte = HybridMatte(MattingConfig(use_ai=False, transparency_preserve=1.0))
+    matte.last_active_ai_model = "gvm"
+    frame = np.full((1, 2, 3), [120, 80, 110], dtype=np.uint8)
+    base_alpha = np.array([[0.40, 0.20]], dtype=np.float32)
+    ai_alpha = np.array([[0.85, 0.05]], dtype=np.float32)
+    subject_gate = np.array([[0.90, 0.0]], dtype=np.float32)
+    subject_alpha = np.array([[0.60, 0.0]], dtype=np.float32)
+    effect_alpha = np.array([[0.80, 0.60]], dtype=np.float32)
+    zero = np.zeros((1, 2), dtype=np.float32)
+    matte._green_screen_subject_confidence = lambda *_args, **_kwargs: subject_gate
+    matte._green_screen_ai_subject_layer = lambda *_args, **_kwargs: subject_alpha
+    matte._green_screen_solid_layer = lambda *_args, **_kwargs: zero
+    matte._green_screen_score_blocked_subject_layer = lambda *_args, **_kwargs: zero
+    matte._green_screen_subject_integrity_layer = lambda *_args, **_kwargs: zero
+    matte._green_screen_semantic_subject_layer = lambda *_args, **_kwargs: zero
+    matte._green_screen_effect_layer = lambda *_args, **_kwargs: effect_alpha
+    matte._green_screen_luminous_effect_reconstruction_layer = lambda *_args, **_kwargs: zero
+    matte._green_screen_gvm_fallback_subject_mask = lambda *_args, **_kwargs: np.zeros((1, 2), dtype=bool)
+    matte._should_apply_gvm_subject_fallback = lambda *_args, **_kwargs: False
+    matte._recover_degenerate_gvm_subject_alpha = lambda alpha, *_args, **_kwargs: alpha
+
+    merged = matte._merge_green_screen_effects([base_alpha], [ai_alpha], [frame])[0]
+
+    assert np.allclose(merged, np.array([[0.60, 0.60]], dtype=np.float32))
+    assert matte.last_green_screen_layer_debug is not None
+    assert len(matte.last_green_screen_layer_debug) == 1
+    assert np.allclose(
+        matte.last_green_screen_layer_debug[0]["ownership_subject"],
+        np.array([[1.0, 0.0]], dtype=np.float32),
+    )
+    assert np.allclose(
+        matte.last_green_screen_layer_debug[0]["ownership_effect"],
+        np.array([[0.0, 1.0]], dtype=np.float32),
+    )
+
+
+def test_green_screen_non_gvm_merge_keeps_legacy_soft_fuse_and_no_layer_debug():
+    matte = HybridMatte(MattingConfig(use_ai=False, transparency_preserve=1.0))
+    matte.last_active_ai_model = "corridorkey"
+    frame = np.full((1, 1, 3), [120, 80, 110], dtype=np.uint8)
+    base_alpha = np.array([[0.40]], dtype=np.float32)
+    ai_alpha = np.array([[0.85]], dtype=np.float32)
+    subject_gate = np.array([[0.0]], dtype=np.float32)
+    subject_alpha = np.array([[0.60]], dtype=np.float32)
+    effect_alpha = np.array([[0.80]], dtype=np.float32)
+    zero = np.zeros((1, 1), dtype=np.float32)
+    matte.last_green_screen_layer_debug = [{"stale": zero}]
+    matte._green_screen_subject_confidence = lambda *_args, **_kwargs: subject_gate
+    matte._green_screen_ai_subject_layer = lambda *_args, **_kwargs: subject_alpha
+    matte._green_screen_solid_layer = lambda *_args, **_kwargs: zero
+    matte._green_screen_score_blocked_subject_layer = lambda *_args, **_kwargs: zero
+    matte._green_screen_subject_integrity_layer = lambda *_args, **_kwargs: zero
+    matte._green_screen_semantic_subject_layer = lambda *_args, **_kwargs: zero
+    matte._green_screen_effect_layer = lambda *_args, **_kwargs: effect_alpha
+    matte._green_screen_luminous_effect_reconstruction_layer = lambda *_args, **_kwargs: zero
+
+    merged = matte._merge_green_screen_effects([base_alpha], [ai_alpha], [frame])[0]
+
+    assert np.allclose(merged, np.array([[0.92]], dtype=np.float32))
+    assert matte.last_green_screen_layer_debug is None
+
+
 class _ConstantMatte:
     def __init__(self, value: float):
         self.value = value

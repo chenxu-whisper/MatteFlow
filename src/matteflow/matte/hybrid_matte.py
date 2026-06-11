@@ -22,6 +22,7 @@ class HybridMatte:
         self.config = config
         self.last_active_ai_model = None
         self.last_fallback_quality_metrics = None
+        self.last_green_screen_layer_debug = None
         self.rvm = None
         self.birefnet = None
         self.rmbg = None
@@ -358,6 +359,7 @@ class HybridMatte:
     ) -> List[np.ndarray]:
         """序列抠图"""
         self.last_active_ai_model = None
+        self.last_green_screen_layer_debug = None
         if bg_mode == BackgroundMode.GREEN_SCREEN:
             return self._green_screen_matte(frames, progress_callback, cancel_check)
         elif bg_mode == BackgroundMode.BLACK_BACKGROUND:
@@ -532,8 +534,17 @@ class HybridMatte:
     ) -> List[np.ndarray]:
         """Preserve transparent screen-space effects that AI subject mattes often drop."""
         preserve = float(np.clip(getattr(self.config, "transparency_preserve", 0.7), 0.0, 1.0))
+        self.last_green_screen_layer_debug = None
         if preserve <= 0.0:
             return ai_alphas
+
+        use_competitive_composer = self.last_active_ai_model == "gvm"
+        composer = None
+        if use_competitive_composer:
+            from .green_screen_layer_composer import GreenScreenCompetitiveLayerComposer, LayerCandidate
+
+            composer = GreenScreenCompetitiveLayerComposer()
+            self.last_green_screen_layer_debug = []
 
         merged: List[np.ndarray] = []
         frame_iter = frames if frames is not None else [None] * len(base_alphas)
@@ -597,7 +608,31 @@ class HybridMatte:
                 effect_alpha,
                 self._green_screen_luminous_effect_reconstruction_layer(base_alpha, frame) * preserve,
             )
-            fused_alpha = self._soft_fuse_layers(solid_alpha, effect_alpha)
+            if composer is not None:
+                subject_competitive_confidence = np.maximum(
+                    subject_gate,
+                    self._smoothstep(solid_alpha, 0.01, 0.35),
+                )
+                effect_competitive_confidence = np.maximum(
+                    effect_alpha,
+                    self._smoothstep(effect_alpha, 0.0, 0.04),
+                )
+                composed = composer.compose(
+                    subject=LayerCandidate(
+                        alpha=solid_alpha,
+                        confidence=subject_competitive_confidence,
+                        evidence=subject_confidence,
+                    ),
+                    effect=LayerCandidate(
+                        alpha=effect_alpha,
+                        confidence=effect_competitive_confidence,
+                        evidence=effect_alpha,
+                    ),
+                )
+                fused_alpha = composed.final_alpha
+                self.last_green_screen_layer_debug.append(composed.debug_layers)
+            else:
+                fused_alpha = self._soft_fuse_layers(solid_alpha, effect_alpha)
             self._log_transparency_fusion_stats("green_screen", solid_alpha, effect_alpha, fused_alpha)
             merged.append(fused_alpha)
         return merged
