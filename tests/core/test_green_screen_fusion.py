@@ -680,6 +680,72 @@ def test_green_screen_semantic_subject_trimap_guides_gvm_subject_without_lifting
     assert float(merged[blue_background].mean()) <= 0.12
 
 
+def test_green_screen_real_frame_3_competitive_ownership_preserves_subject_effect_and_background():
+    matte = HybridMatte(MattingConfig(use_ai=False))
+    matte.last_active_ai_model = "gvm"
+    matte.last_fallback_quality_metrics = {
+        "score_blocked": True,
+        "effect_damage_blocked": False,
+        "accepted": False,
+    }
+    frame_bgr = cv2.imread(str(PROJECT_ROOT / "assets" / "frame" / "test_frame_3.jpg"))
+    assert frame_bgr is not None
+    frame = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    frame_f = frame.astype(np.float32, copy=False)
+    red = frame_f[:, :, 0]
+    green = frame_f[:, :, 1]
+    blue = frame_f[:, :, 2]
+    brightness = frame_f.mean(axis=2)
+    chroma = frame_f.max(axis=2) - frame_f.min(axis=2)
+    purple_subject = (red > 120.0) & (blue > 130.0) & (green < 180.0)
+    base_alpha = matte.green_matte.generate(frame)
+    ai_alpha = np.where(purple_subject & (base_alpha >= 0.45), 1.0, 0.0039).astype(np.float32)
+    semantic_subject_alpha = np.where(purple_subject, 1.0, 0.0).astype(np.float32)
+    subject_holes = purple_subject & matte._green_screen_non_screen_mask(frame) & (base_alpha < 0.45)
+    luminous_core = (
+        (brightness > 205.0)
+        & (chroma < 70.0)
+        & (base_alpha < 0.75)
+        & (~purple_subject)
+    )
+    core_reach = cv2.dilate(
+        luminous_core.astype(np.uint8),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (51, 51)),
+        iterations=1,
+    ).astype(bool)
+    far_blue_background = (
+        (~core_reach)
+        & (blue > 140.0)
+        & (green > 120.0)
+        & (red < 150.0)
+        & (brightness > 120.0)
+        & (base_alpha < 0.45)
+        & (~purple_subject)
+    )
+
+    merged = matte._merge_green_screen_effects(
+        [base_alpha],
+        [ai_alpha],
+        [frame],
+        semantic_subject_alphas=[semantic_subject_alpha],
+    )[0]
+    debug = matte.last_green_screen_layer_debug
+
+    assert debug is not None
+    assert int(subject_holes.sum()) >= 100_000
+    assert int(luminous_core.sum()) >= 50_000
+    assert int(far_blue_background.sum()) >= 300_000
+    assert float(debug["ownership_subject"][subject_holes].mean()) >= 0.98
+    assert float(debug["final_alpha"][subject_holes].mean()) >= 0.80
+    assert float(debug["ownership_effect"][luminous_core].mean()) >= 0.99
+    assert float(debug["effect_evidence"][luminous_core].mean()) >= 0.65
+    assert float(debug["final_alpha"][luminous_core].mean()) >= 0.69
+    assert float(debug["background_evidence"][far_blue_background].mean()) >= 0.98
+    assert float(debug["ownership_background"][far_blue_background].mean()) >= 0.98
+    assert float((merged[far_blue_background] > 0.35).mean()) <= 0.02
+    assert float(debug["final_alpha"][far_blue_background].mean()) <= 0.03
+
+
 def test_green_screen_gvm_builds_semantic_subject_trimap_from_birefnet_helper():
     matte = HybridMatte(MattingConfig(use_ai=False))
     matte.birefnet = _SequenceEngine(0.75)

@@ -47,9 +47,11 @@ class GreenScreenCompetitiveLayerComposer:
         *,
         subject: LayerCandidate,
         effect: LayerCandidate,
+        background_evidence: np.ndarray | None = None,
     ) -> CompetitiveLayerResult:
         shape = self._require_candidate_shape("subject", subject)
         self._require_candidate_shape("effect", effect, expected_shape=shape)
+        self._require_optional_evidence_shape("background_evidence", background_evidence, shape)
 
         subject_alpha = self._as_alpha(subject.alpha)
         effect_alpha = self._as_alpha(effect.alpha)
@@ -57,6 +59,11 @@ class GreenScreenCompetitiveLayerComposer:
         effect_confidence = self._as_alpha(effect.confidence)
         subject_evidence = self._candidate_evidence(subject, subject_confidence)
         effect_evidence = self._candidate_evidence(effect, effect_confidence)
+        background_evidence = (
+            np.zeros(shape, dtype=np.float32)
+            if background_evidence is None
+            else self._as_alpha(background_evidence)
+        )
         subject_support = np.maximum.reduce(
             [subject_alpha, subject_confidence, subject_evidence]
         )
@@ -80,6 +87,7 @@ class GreenScreenCompetitiveLayerComposer:
                 & (~effect_over_subject_evidence)
             )
             | background_suppression
+            | (background_evidence >= 0.50)
         )
         subject_owns = subject_owns & (~background_owns)
         effect_owns = effect_owns & (~background_owns)
@@ -99,6 +107,7 @@ class GreenScreenCompetitiveLayerComposer:
             "effect_confidence": effect_confidence,
             "subject_evidence": subject_evidence,
             "effect_evidence": effect_evidence,
+            "background_evidence": background_evidence,
             "effect_over_subject_evidence": effect_over_subject_evidence.astype(np.float32),
             "background_suppression": background_suppression.astype(np.float32),
             "subject_alpha_out": subject_alpha_out,
@@ -144,6 +153,20 @@ class GreenScreenCompetitiveLayerComposer:
                 f"{name}.alpha shape {shape} does not match subject alpha shape {expected_shape}"
             )
         return shape
+
+    @staticmethod
+    def _require_optional_evidence_shape(
+        name: str,
+        evidence: np.ndarray | None,
+        expected_shape: tuple[int, int],
+    ) -> None:
+        if evidence is None:
+            return
+        evidence_shape = tuple(np.asarray(evidence).shape)
+        if evidence_shape != expected_shape:
+            raise ValueError(
+                f"{name} shape {evidence_shape} does not match subject alpha shape {expected_shape}"
+            )
 
     @staticmethod
     def _as_alpha(value: np.ndarray) -> np.ndarray:

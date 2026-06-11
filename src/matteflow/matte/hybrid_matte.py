@@ -608,6 +608,7 @@ class HybridMatte:
                 self._green_screen_luminous_effect_reconstruction_layer(base_alpha, frame) * preserve,
             )
             if composer is not None:
+                background_evidence = self._green_screen_background_evidence_layer(base_alpha, frame)
                 subject_competitive_confidence = np.maximum(
                     subject_gate,
                     self._smoothstep(solid_alpha, 0.01, 0.35),
@@ -627,6 +628,7 @@ class HybridMatte:
                         confidence=effect_competitive_confidence,
                         evidence=effect_alpha,
                     ),
+                    background_evidence=background_evidence,
                 )
                 fused_alpha = composed.final_alpha
                 self.last_green_screen_layer_debug = composed.debug_layers
@@ -670,6 +672,48 @@ class HybridMatte:
             effect_alpha = effect_alpha * self._green_screen_effect_color_weight(frame)
             effect_alpha = np.maximum(effect_alpha, self._green_screen_white_ring_boost(base_alpha, frame))
         return np.clip(effect_alpha, 0.0, 1.0)
+
+    def _green_screen_background_evidence_layer(
+        self,
+        base_alpha: np.ndarray,
+        frame: np.ndarray | None,
+    ) -> np.ndarray:
+        """Identify low-support blue screen-space background away from luminous effects."""
+        if frame is None:
+            return np.zeros_like(base_alpha, dtype=np.float32)
+
+        frame_f = frame.astype(np.float32, copy=False)
+        red = frame_f[:, :, 0]
+        green = frame_f[:, :, 1]
+        blue = frame_f[:, :, 2]
+        brightness = (red + green + blue) / 3.0
+        chroma = np.maximum.reduce([red, green, blue]) - np.minimum.reduce([red, green, blue])
+        screen_green = (green > red + 30.0) & (green > blue + 20.0) & (green > 90.0)
+        purple_subject = (red > 120.0) & (blue > 130.0) & (green < 180.0)
+
+        luminous_core = (
+            (brightness > 205.0)
+            & (chroma < 70.0)
+            & (base_alpha < 0.75)
+            & (~purple_subject)
+            & (~screen_green)
+        )
+        core_reach = cv2.dilate(
+            luminous_core.astype(np.uint8, copy=False),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (51, 51)),
+            iterations=1,
+        ).astype(bool)
+        far_blue_background = (
+            (~core_reach)
+            & (~purple_subject)
+            & (~screen_green)
+            & (blue > 140.0)
+            & (green > 120.0)
+            & (red < 150.0)
+            & (brightness > 120.0)
+            & (base_alpha < 0.45)
+        )
+        return far_blue_background.astype(np.float32, copy=False)
 
     def _green_screen_luminous_effect_reconstruction_layer(
         self,
