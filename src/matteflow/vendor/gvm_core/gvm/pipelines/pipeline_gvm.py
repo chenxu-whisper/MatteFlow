@@ -1,3 +1,4 @@
+import inspect
 import torch
 import tqdm
 import numpy as np
@@ -89,6 +90,53 @@ class GVMPipeline(DiffusionPipeline, GVMLoraLoader):
         frames = frames.reshape(-1, num_frames, *frames.shape[1:])
         return frames.to(torch.float32)
 
+    def _unet_uses_added_time_ids(self):
+        seen = set()
+        stack = [self.unet]
+        while stack:
+            unet = stack.pop()
+            if id(unet) in seen:
+                continue
+            seen.add(id(unet))
+
+            for attr_name in ("forward", "__call__"):
+                attr = getattr(unet, attr_name, None)
+                if attr is None:
+                    continue
+                try:
+                    signature = inspect.signature(attr)
+                except (TypeError, ValueError):
+                    continue
+                if "added_time_ids" in signature.parameters:
+                    return True
+                if {"position_ids", "class_labels"} & set(signature.parameters):
+                    return False
+
+            for attr_name in ("model", "base_model", "module"):
+                wrapped = getattr(unet, attr_name, None)
+                if wrapped is not None:
+                    stack.append(wrapped)
+
+        return False
+
+    def _call_unet(self, latent_model_input, timestep, image_embeddings, position_ids=None, class_labels=None):
+        if self._unet_uses_added_time_ids():
+            added_time_ids = latent_model_input.new_zeros((latent_model_input.shape[0], 3))
+            return self.unet(
+                latent_model_input,
+                timestep,
+                encoder_hidden_states=image_embeddings,
+                added_time_ids=added_time_ids,
+            ).sample
+
+        return self.unet(
+            latent_model_input,
+            timestep,
+            encoder_hidden_states=image_embeddings,
+            position_ids=position_ids,
+            class_labels=class_labels,
+        ).sample
+
     
     def single_infer(self, rgb, position_ids=None, num_inference_steps=None, class_labels=None, noise_type="gaussian"):
         rgb_latent = self.encode(rgb)
@@ -113,13 +161,13 @@ class GVMPipeline(DiffusionPipeline, GVMLoraLoader):
             latent_model_input = noise_latent
             latent_model_input = torch.cat([latent_model_input, rgb_latent], dim=2)
             # [batch_size, num_frame, 4, h, w]
-            model_output = self.unet(
+            model_output = self._call_unet(
                 latent_model_input,
                 t,
-                encoder_hidden_states=image_embeddings,
+                image_embeddings,
                 position_ids=position_ids,
                 class_labels=class_labels,
-            ).sample
+            )
 
             if noise_type == 'zeros':
                 noise_latent = model_output
