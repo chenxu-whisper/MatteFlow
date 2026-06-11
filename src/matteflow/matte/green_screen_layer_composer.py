@@ -39,6 +39,9 @@ class CompetitiveLayerResult:
 class GreenScreenCompetitiveLayerComposer:
     """Composes subject/effect candidates with explicit debug layer outputs."""
 
+    _BACKGROUND_SUBJECT_SUPPORT_MAX = 0.20
+    _BACKGROUND_EFFECT_EVIDENCE_MAX = 0.35
+
     def compose(
         self,
         *,
@@ -54,6 +57,14 @@ class GreenScreenCompetitiveLayerComposer:
         effect_confidence = self._as_alpha(effect.confidence)
         subject_evidence = self._candidate_evidence(subject, subject_confidence)
         effect_evidence = self._candidate_evidence(effect, effect_confidence)
+        subject_support = np.maximum.reduce(
+            [subject_alpha, subject_confidence, subject_evidence]
+        )
+        effect_support = np.maximum(effect_confidence, effect_evidence)
+        background_suppression = (
+            (subject_support <= self._BACKGROUND_SUBJECT_SUPPORT_MAX)
+            & (effect_support <= self._BACKGROUND_EFFECT_EVIDENCE_MAX)
+        )
 
         effect_over_subject_evidence = (
             (effect_alpha > 0.0)
@@ -63,11 +74,15 @@ class GreenScreenCompetitiveLayerComposer:
         subject_owns = (subject_confidence >= effect_confidence) & (~effect_over_subject_evidence)
         effect_owns = effect_over_subject_evidence | ((~subject_owns) & (effect_confidence > 0.0))
         background_owns = (
-            (subject_confidence <= 0.0)
-            & (effect_confidence <= 0.0)
-            & (~effect_over_subject_evidence)
+            (
+                (subject_confidence <= 0.0)
+                & (effect_confidence <= 0.0)
+                & (~effect_over_subject_evidence)
+            )
+            | background_suppression
         )
         subject_owns = subject_owns & (~background_owns)
+        effect_owns = effect_owns & (~background_owns)
 
         subject_alpha_out = np.where(subject_owns, subject_alpha, 0.0).astype(np.float32)
         effect_alpha_out = np.where(effect_owns, effect_alpha, 0.0).astype(np.float32)
@@ -85,6 +100,7 @@ class GreenScreenCompetitiveLayerComposer:
             "subject_evidence": subject_evidence,
             "effect_evidence": effect_evidence,
             "effect_over_subject_evidence": effect_over_subject_evidence.astype(np.float32),
+            "background_suppression": background_suppression.astype(np.float32),
             "subject_alpha_out": subject_alpha_out,
             "effect_alpha_out": effect_alpha_out,
             "final_alpha": final_alpha,
