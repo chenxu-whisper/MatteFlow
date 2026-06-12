@@ -122,7 +122,8 @@ class GVMProcessor:
             unet_folder, 
             subfolder="unet", 
             class_embed_type=None,
-            torch_dtype=self._dtype
+            torch_dtype=self._dtype,
+            low_cpu_mem_usage=False,
         )
 
         self.pipe = GVMPipeline(vae=self.vae, unet=self.unet, scheduler=self.scheduler)

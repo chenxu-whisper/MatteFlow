@@ -970,9 +970,7 @@ def process_video(
         preview_output = None
 
         if job.status == JobStatus.FAILED:
-            if job.error is not None:
-                raise job.error
-            raise RuntimeError(job.error_message or "processing failed")
+            return None, None, f"❌ 处理失败: {job.error_message or 'processing failed'}", None, None, 0, None
         if job.status == JobStatus.CANCELLED:
             return None, None, "⏹ 已取消", None, None, 0, None
 
