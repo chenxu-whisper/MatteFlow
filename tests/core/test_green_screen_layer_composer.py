@@ -249,6 +249,29 @@ def test_background_evidence_does_not_clear_high_confidence_effect_at_evidence_b
     assert np.allclose(result.final_alpha, np.array([[0.86]], dtype=np.float32))
 
 
+def test_background_evidence_can_reclaim_saturated_low_evidence_effect_halo():
+    subject = LayerCandidate(
+        alpha=np.array([[0.0, 0.0]], dtype=np.float32),
+        confidence=np.array([[0.0, 0.0]], dtype=np.float32),
+        evidence=np.array([[0.0, 0.0]], dtype=np.float32),
+    )
+    effect = LayerCandidate(
+        alpha=np.array([[0.24, 0.86]], dtype=np.float32),
+        confidence=np.array([[1.0, 1.0]], dtype=np.float32),
+        evidence=np.array([[0.24, 0.86]], dtype=np.float32),
+    )
+
+    result = GreenScreenCompetitiveLayerComposer().compose(
+        subject=subject,
+        effect=effect,
+        background_evidence=np.array([[1.0, 1.0]], dtype=np.float32),
+    )
+
+    assert np.array_equal(result.ownership.background, np.array([[1.0, 0.0]], dtype=np.float32))
+    assert np.array_equal(result.ownership.effect, np.array([[0.0, 1.0]], dtype=np.float32))
+    assert np.allclose(result.final_alpha, np.array([[0.0, 0.86]], dtype=np.float32))
+
+
 def test_minimal_compose_contract_clips_alpha_and_confidence_inputs():
     subject = LayerCandidate(
         alpha=np.array([[1.5, -0.5]], dtype=np.float64),
