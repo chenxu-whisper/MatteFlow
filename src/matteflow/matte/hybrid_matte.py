@@ -691,13 +691,28 @@ class HybridMatte:
         screen_green = (green > red + 30.0) & (green > blue + 20.0) & (green > 90.0)
         purple_subject = (red > 120.0) & (blue > 130.0) & (green < 180.0)
 
-        luminous_core = (
-            (brightness > 205.0)
-            & (chroma < 70.0)
-            & (base_alpha < 0.75)
-            & (~purple_subject)
-            & (~screen_green)
+        white_core = (brightness > 205.0) & (chroma < 70.0)
+        blue_white_core = (
+            (brightness > 185.0)
+            & (blue > 150.0)
+            & (green > 140.0)
+            & (red > 130.0)
+            & (chroma < 95.0)
         )
+        yellow_white_core = (red > 200.0) & (green > 155.0) & (blue > 90.0) & (brightness > 165.0)
+        luminous_core = (white_core | blue_white_core | yellow_white_core) & (~purple_subject) & (~screen_green)
+        component_count, labels = cv2.connectedComponents(luminous_core.astype(np.uint8), connectivity=8)
+        if component_count > 1:
+            component_sizes = np.bincount(labels.ravel())
+            keep_labels = np.where(component_sizes >= 12)[0]
+            keep_labels = keep_labels[keep_labels != 0]
+            luminous_core = np.isin(labels, keep_labels) if keep_labels.size else np.zeros_like(luminous_core)
+            luminous_core = cv2.morphologyEx(
+                luminous_core.astype(np.uint8, copy=False),
+                cv2.MORPH_CLOSE,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+                iterations=1,
+            ).astype(bool)
         core_reach = cv2.dilate(
             luminous_core.astype(np.uint8, copy=False),
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (51, 51)),

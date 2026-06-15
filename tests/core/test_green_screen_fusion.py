@@ -816,18 +816,35 @@ def test_green_screen_real_frame_3_independent_teal_background_is_not_effect_own
     blue = frame_f[:, :, 2]
     brightness = frame_f.mean(axis=2)
     chroma = frame_f.max(axis=2) - frame_f.min(axis=2)
+    screen_green = (green > red + 30.0) & (green > blue + 20.0) & (green > 90.0)
     purple_subject = (red > 120.0) & (blue > 130.0) & (green < 180.0)
     base_alpha = matte.green_matte.generate(frame)
     ai_alpha = np.where(purple_subject & (base_alpha >= 0.45), 1.0, 0.0039).astype(np.float32)
     semantic_subject_alpha = np.where(purple_subject, 1.0, 0.0).astype(np.float32)
     subject_holes = purple_subject & matte._green_screen_non_screen_mask(frame) & (base_alpha < 0.45)
     bright_effect_smoke = (brightness > 225.0) & (chroma < 55.0) & (~purple_subject)
-    luminous_core = (
-        (brightness > 205.0)
-        & (chroma < 70.0)
-        & (base_alpha < 0.75)
-        & (~purple_subject)
+    white_core = (brightness > 205.0) & (chroma < 70.0)
+    blue_white_core = (
+        (brightness > 185.0)
+        & (blue > 150.0)
+        & (green > 140.0)
+        & (red > 130.0)
+        & (chroma < 95.0)
     )
+    yellow_white_core = (red > 200.0) & (green > 155.0) & (blue > 90.0) & (brightness > 165.0)
+    luminous_core = (white_core | blue_white_core | yellow_white_core) & (~purple_subject) & (~screen_green)
+    component_count, labels = cv2.connectedComponents(luminous_core.astype(np.uint8), connectivity=8)
+    if component_count > 1:
+        component_sizes = np.bincount(labels.ravel())
+        keep_labels = np.where(component_sizes >= 12)[0]
+        keep_labels = keep_labels[keep_labels != 0]
+        luminous_core = np.isin(labels, keep_labels) if keep_labels.size else np.zeros_like(luminous_core)
+        luminous_core = cv2.morphologyEx(
+            luminous_core.astype(np.uint8),
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+            iterations=1,
+        ).astype(bool)
     lightning_reach = cv2.dilate(
         luminous_core.astype(np.uint8),
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (51, 51)),
@@ -864,6 +881,48 @@ def test_green_screen_real_frame_3_independent_teal_background_is_not_effect_own
     assert float(debug["ownership_subject"][subject_holes].mean()) >= 0.98
     assert float(debug["final_alpha"][bright_effect_smoke].mean()) >= 0.55
     assert float(debug["ownership_effect"][bright_effect_smoke].mean()) >= 0.80
+
+
+def test_green_screen_background_evidence_preserves_cyan_halo_near_non_white_luminous_core():
+    matte = HybridMatte(MattingConfig(use_ai=False, transparency_preserve=1.0))
+    matte.last_active_ai_model = "gvm"
+    frame = np.full((40, 100, 3), [0, 255, 0], dtype=np.uint8)
+    frame[8:12, 10:14] = [170, 185, 210]  # blue-white lightning core
+    frame[24:28, 10:14] = [230, 180, 110]  # yellow-white lightning core
+    frame[8:12, 15:22] = [105, 135, 182]
+    frame[24:28, 15:22] = [105, 135, 182]
+    frame[8:12, 82:89] = [95, 130, 172]
+    frame[24:28, 82:89] = [95, 130, 172]
+    base_alpha = np.zeros(frame.shape[:2], dtype=np.float32)
+    ai_alpha = np.zeros(frame.shape[:2], dtype=np.float32)
+    zero = np.zeros(frame.shape[:2], dtype=np.float32)
+    matte._green_screen_subject_confidence = lambda *_args, **_kwargs: zero
+    matte._green_screen_ai_subject_layer = lambda *_args, **_kwargs: zero
+    matte._green_screen_solid_layer = lambda *_args, **_kwargs: zero
+    matte._green_screen_score_blocked_subject_layer = lambda *_args, **_kwargs: zero
+    matte._green_screen_subject_integrity_layer = lambda *_args, **_kwargs: zero
+    matte._green_screen_semantic_subject_layer = lambda *_args, **_kwargs: zero
+    matte._green_screen_effect_layer = lambda *_args, **_kwargs: zero
+    matte._green_screen_gvm_fallback_subject_mask = lambda *_args, **_kwargs: np.zeros(frame.shape[:2], dtype=bool)
+    matte._should_apply_gvm_subject_fallback = lambda *_args, **_kwargs: False
+    matte._recover_degenerate_gvm_subject_alpha = lambda alpha, *_args, **_kwargs: alpha
+    near_cyan_halo = np.zeros(frame.shape[:2], dtype=bool)
+    near_cyan_halo[8:12, 15:22] = True
+    near_cyan_halo[24:28, 15:22] = True
+    far_teal_background = np.zeros(frame.shape[:2], dtype=bool)
+    far_teal_background[8:12, 82:89] = True
+    far_teal_background[24:28, 82:89] = True
+
+    merged = matte._merge_green_screen_effects([base_alpha], [ai_alpha], [frame])[0]
+    debug = matte.last_green_screen_layer_debug
+
+    assert debug is not None
+    assert float(debug["background_evidence"][near_cyan_halo].mean()) == 0.0
+    assert float(debug["ownership_effect"][near_cyan_halo].mean()) >= 0.95
+    assert float(debug["final_alpha"][near_cyan_halo].mean()) >= 0.19
+    assert float(debug["background_evidence"][far_teal_background].mean()) == 1.0
+    assert float(debug["ownership_background"][far_teal_background].mean()) >= 0.95
+    assert float(merged[far_teal_background].mean()) <= 0.01
 
 
 def test_green_screen_background_evidence_does_not_clear_confident_blue_subject_or_cyan_effect():
