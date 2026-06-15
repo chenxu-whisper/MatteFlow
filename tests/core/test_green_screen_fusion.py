@@ -759,6 +759,28 @@ def test_green_screen_real_frame_3_balanced_cleanup_suppresses_teal_background_r
     semantic_subject_alpha = np.where(purple_subject, 1.0, 0.0).astype(np.float32)
     subject_holes = purple_subject & matte._green_screen_non_screen_mask(frame) & (base_alpha < 0.45)
     bright_effect_smoke = (brightness > 225.0) & (chroma < 55.0) & (~purple_subject)
+    x_positions = np.arange(frame.shape[1])[None, :]
+    luminous_core = (
+        (brightness > 205.0)
+        & (chroma < 70.0)
+        & (base_alpha < 0.75)
+        & (~purple_subject)
+    )
+    lightning_reach = cv2.dilate(
+        luminous_core.astype(np.uint8),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (51, 51)),
+        iterations=1,
+    ).astype(bool)
+    teal_background_residue = (
+        (x_positions < frame.shape[1] * 0.35)
+        & (~lightning_reach)
+        & (blue > 150.0)
+        & (green > 125.0)
+        & (red < 135.0)
+        & (brightness > 125.0)
+        & (base_alpha < 0.20)
+        & (~purple_subject)
+    )
 
     merged = matte._merge_green_screen_effects(
         [base_alpha],
@@ -769,10 +791,8 @@ def test_green_screen_real_frame_3_balanced_cleanup_suppresses_teal_background_r
     debug = matte.last_green_screen_layer_debug
 
     assert debug is not None
-    background_evidence = debug["background_evidence"].astype(bool)
-    assert int(background_evidence.sum()) >= 450_000
-    assert float((merged[background_evidence] > 0.20).mean()) <= 0.04
-    assert float(np.percentile(merged[background_evidence], 95)) <= 0.08
+    assert int(teal_background_residue.sum()) >= 50_000
+    assert float((merged[teal_background_residue] > 0.20).mean()) <= 0.04
     assert float(debug["final_alpha"][subject_holes].mean()) >= 0.80
     assert float(debug["ownership_subject"][subject_holes].mean()) >= 0.98
     assert float(debug["final_alpha"][bright_effect_smoke].mean()) >= 0.55

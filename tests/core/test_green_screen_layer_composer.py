@@ -203,6 +203,52 @@ def test_background_evidence_does_not_override_high_confidence_subject_or_effect
     assert np.allclose(result.final_alpha, np.array([[0.93, 0.88]], dtype=np.float32))
 
 
+def test_background_evidence_does_not_clear_high_support_subject_with_low_evidence():
+    subject = LayerCandidate(
+        alpha=np.array([[0.82]], dtype=np.float32),
+        confidence=np.array([[0.88]], dtype=np.float32),
+        evidence=np.array([[0.20]], dtype=np.float32),
+    )
+    effect = LayerCandidate(
+        alpha=np.array([[0.0]], dtype=np.float32),
+        confidence=np.array([[0.0]], dtype=np.float32),
+        evidence=np.array([[0.0]], dtype=np.float32),
+    )
+
+    result = GreenScreenCompetitiveLayerComposer().compose(
+        subject=subject,
+        effect=effect,
+        background_evidence=np.array([[1.0]], dtype=np.float32),
+    )
+
+    assert np.array_equal(result.ownership.background, np.array([[0.0]], dtype=np.float32))
+    assert np.array_equal(result.ownership.subject, np.array([[1.0]], dtype=np.float32))
+    assert np.allclose(result.final_alpha, np.array([[0.82]], dtype=np.float32))
+
+
+def test_background_evidence_does_not_clear_high_confidence_effect_at_evidence_boundary():
+    subject = LayerCandidate(
+        alpha=np.array([[0.0]], dtype=np.float32),
+        confidence=np.array([[0.0]], dtype=np.float32),
+        evidence=np.array([[0.0]], dtype=np.float32),
+    )
+    effect = LayerCandidate(
+        alpha=np.array([[0.86]], dtype=np.float32),
+        confidence=np.array([[0.92]], dtype=np.float32),
+        evidence=np.array([[0.85]], dtype=np.float32),
+    )
+
+    result = GreenScreenCompetitiveLayerComposer().compose(
+        subject=subject,
+        effect=effect,
+        background_evidence=np.array([[1.0]], dtype=np.float32),
+    )
+
+    assert np.array_equal(result.ownership.background, np.array([[0.0]], dtype=np.float32))
+    assert np.array_equal(result.ownership.effect, np.array([[1.0]], dtype=np.float32))
+    assert np.allclose(result.final_alpha, np.array([[0.86]], dtype=np.float32))
+
+
 def test_minimal_compose_contract_clips_alpha_and_confidence_inputs():
     subject = LayerCandidate(
         alpha=np.array([[1.5, -0.5]], dtype=np.float64),
