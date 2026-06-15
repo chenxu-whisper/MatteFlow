@@ -43,7 +43,7 @@ class GreenScreenCompetitiveLayerComposer:
     _BACKGROUND_EFFECT_EVIDENCE_MAX = 0.35
     _BACKGROUND_EVIDENCE_MIN = 0.50
     _BACKGROUND_EVIDENCE_SUBJECT_SUPPORT_MAX = 0.60
-    _BACKGROUND_EVIDENCE_EFFECT_SUPPORT_MAX = 0.60
+    _BACKGROUND_EVIDENCE_EFFECT_SUPPORT_MAX = 0.85
 
     def compose(
         self,
@@ -77,8 +77,8 @@ class GreenScreenCompetitiveLayerComposer:
         )
         background_evidence_owns = (
             (background_evidence >= self._BACKGROUND_EVIDENCE_MIN)
-            & (subject_support <= self._BACKGROUND_EVIDENCE_SUBJECT_SUPPORT_MAX)
-            & (effect_support <= self._BACKGROUND_EVIDENCE_EFFECT_SUPPORT_MAX)
+            & (subject_evidence <= self._BACKGROUND_EVIDENCE_SUBJECT_SUPPORT_MAX)
+            & (effect_evidence <= self._BACKGROUND_EVIDENCE_EFFECT_SUPPORT_MAX)
         )
 
         effect_over_subject_evidence = (
