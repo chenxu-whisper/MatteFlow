@@ -584,7 +584,7 @@ def test_green_screen_effect_reconstruction_preserves_real_luminous_lightning_ba
     assert float(merged[luminous_band_core].mean()) >= 0.70
 
 
-def test_green_screen_effect_reconstruction_suppresses_cyan_halo_without_damaging_lightning_core():
+def test_green_screen_effect_reconstruction_preserves_cyan_halo_near_lightning_core():
     matte = HybridMatte(MattingConfig(use_ai=False))
     matte.last_active_ai_model = "gvm"
     matte.last_fallback_quality_metrics = {
@@ -631,8 +631,8 @@ def test_green_screen_effect_reconstruction_suppresses_cyan_halo_without_damagin
     assert int(near_lightning_cyan_halo.sum()) >= 80_000
     assert int(far_cyan_background.sum()) >= 300_000
     assert float(merged[luminous_core].mean()) >= 0.70
-    assert float((merged[near_lightning_cyan_halo] > 0.03).mean()) <= 0.02
-    assert float(merged[near_lightning_cyan_halo].mean()) <= 0.02
+    assert float((merged[near_lightning_cyan_halo] > 0.03).mean()) >= 0.90
+    assert float(merged[near_lightning_cyan_halo].mean()) >= 0.20
     assert float((merged[far_cyan_background] > 0.35).mean()) <= 0.08
     assert float(merged[far_cyan_background].mean()) <= 0.08
 
@@ -995,8 +995,9 @@ def test_green_screen_real_frame_3_visible_teal_residue_is_reclaimed_without_dam
     assert float(debug["ownership_subject"][subject_central].mean()) >= 0.98
     assert float(debug["final_alpha"][luminous_core].mean()) >= 0.55
     assert float(debug["ownership_effect"][luminous_core].mean()) >= 0.80
-    assert float((debug["final_alpha"][cyan_halo_near] > 0.03).mean()) <= 0.04
-    assert float(debug["ownership_background"][cyan_halo_near].mean()) >= 0.96
+    assert float((debug["final_alpha"][cyan_halo_near] > 0.03).mean()) >= 0.90
+    assert float(debug["final_alpha"][cyan_halo_near].mean()) >= 0.20
+    assert float(debug["ownership_effect"][cyan_halo_near].mean()) >= 0.80
 
 
 def test_green_screen_real_frame_3_global_visible_teal_residue_rate_is_extremely_low():
@@ -1060,6 +1061,11 @@ def test_green_screen_real_frame_3_global_visible_teal_residue_rate_is_extremely
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
         iterations=1,
     ).astype(bool)
+    lightning_reach = cv2.dilate(
+        bright_lightning_core.astype(np.uint8),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (51, 51)),
+        iterations=1,
+    ).astype(bool)
 
     height, width = base_alpha.shape
     y_positions, x_positions = np.ogrid[:height, :width]
@@ -1078,7 +1084,7 @@ def test_green_screen_real_frame_3_global_visible_teal_residue_rate_is_extremely
         & (red < 170.0)
         & (brightness > 80.0)
         & (~purple_subject)
-        & (~bright_lightning_core)
+        & (~lightning_reach)
     )
 
     merged = matte._merge_green_screen_effects(
@@ -1106,7 +1112,7 @@ def test_green_screen_real_frame_3_global_visible_teal_residue_rate_is_extremely
     assert float(debug["final_alpha"][main_white_blue_lightning_lines].mean()) >= 0.55
 
 
-def test_green_screen_background_evidence_reclaims_teal_halo_while_preserving_luminous_core():
+def test_green_screen_background_evidence_preserves_cyan_halo_near_non_white_luminous_core():
     matte = HybridMatte(MattingConfig(use_ai=False, transparency_preserve=1.0))
     matte.last_active_ai_model = "gvm"
     frame = np.full((40, 100, 3), [0, 255, 0], dtype=np.uint8)
@@ -1133,9 +1139,9 @@ def test_green_screen_background_evidence_reclaims_teal_halo_while_preserving_lu
     blue_white_core[8:12, 10:14] = True
     yellow_white_core = np.zeros(frame.shape[:2], dtype=bool)
     yellow_white_core[24:28, 10:14] = True
-    near_teal_halo = np.zeros(frame.shape[:2], dtype=bool)
-    near_teal_halo[8:12, 15:22] = True
-    near_teal_halo[24:28, 15:22] = True
+    near_cyan_halo = np.zeros(frame.shape[:2], dtype=bool)
+    near_cyan_halo[8:12, 15:22] = True
+    near_cyan_halo[24:28, 15:22] = True
     far_teal_background = np.zeros(frame.shape[:2], dtype=bool)
     far_teal_background[8:12, 82:89] = True
     far_teal_background[24:28, 82:89] = True
@@ -1147,9 +1153,9 @@ def test_green_screen_background_evidence_reclaims_teal_halo_while_preserving_lu
     assert float(debug["background_evidence"][blue_white_core | yellow_white_core].mean()) == 0.0
     assert float(debug["ownership_effect"][blue_white_core | yellow_white_core].mean()) >= 0.95
     assert float(debug["final_alpha"][blue_white_core | yellow_white_core].mean()) >= 0.95
-    assert float(debug["background_evidence"][near_teal_halo].mean()) == 1.0
-    assert float(debug["ownership_background"][near_teal_halo].mean()) >= 0.95
-    assert float(merged[near_teal_halo].mean()) <= 0.01
+    assert float(debug["background_evidence"][near_cyan_halo].mean()) == 0.0
+    assert float(debug["ownership_effect"][near_cyan_halo].mean()) >= 0.95
+    assert float(merged[near_cyan_halo].mean()) >= 0.19
     assert float(debug["background_evidence"][far_teal_background].mean()) == 1.0
     assert float(debug["ownership_background"][far_teal_background].mean()) >= 0.95
     assert float(merged[far_teal_background].mean()) <= 0.01

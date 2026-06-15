@@ -728,8 +728,24 @@ class HybridMatte:
                 cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
                 iterations=1,
             ).astype(bool)
+        core_reach = cv2.dilate(
+            luminous_core.astype(np.uint8, copy=False),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25)),
+            iterations=1,
+        ).astype(bool)
+        cyan_halo_candidate = (
+            (blue > 140.0)
+            & (green > 120.0)
+            & (red < 155.0)
+            & (brightness > 120.0)
+            & (base_alpha < 0.45)
+            & (~purple_subject)
+            & (~screen_green)
+        )
+        near_luminous_cyan_halo = core_reach & (~luminous_core) & cyan_halo_candidate
         far_blue_background = (
             (~luminous_core)
+            & (~near_luminous_cyan_halo)
             & (~purple_subject)
             & (~screen_green)
             & (blue > 80.0)
