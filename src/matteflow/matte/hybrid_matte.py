@@ -615,7 +615,11 @@ class HybridMatte:
                 )
                 effect_competitive_confidence = np.maximum(
                     effect_alpha,
-                    self._smoothstep(effect_alpha, 0.0, 0.04),
+                    np.where(
+                        effect_alpha > 0.0,
+                        0.40 + 0.45 * self._smoothstep(effect_alpha, 0.05, 0.35),
+                        0.0,
+                    ),
                 )
                 composed = composer.compose(
                     subject=LayerCandidate(
@@ -715,7 +719,7 @@ class HybridMatte:
             ).astype(bool)
         core_reach = cv2.dilate(
             luminous_core.astype(np.uint8, copy=False),
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (51, 51)),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25)),
             iterations=1,
         ).astype(bool)
         far_blue_background = (
@@ -803,7 +807,7 @@ class HybridMatte:
 
         core_reach = cv2.dilate(
             core_mask.astype(np.uint8, copy=False),
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (51, 51)),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25)),
             iterations=1,
         ).astype(bool)
         cyan_halo_candidate = (
@@ -819,9 +823,9 @@ class HybridMatte:
             return np.zeros_like(base_alpha, dtype=np.float32)
 
         distance_to_core = cv2.distanceTransform((~core_mask).astype(np.uint8), cv2.DIST_L2, 3)
-        distance_weight = np.clip((28.0 - distance_to_core) / 28.0, 0.0, 1.0)
+        distance_weight = np.clip((14.0 - distance_to_core) / 14.0, 0.0, 1.0)
         brightness_weight = self._smoothstep(brightness / 255.0, 0.42, 0.72)
-        halo_alpha = (0.34 + 0.18 * distance_weight) * brightness_weight
+        halo_alpha = (0.36 + 0.18 * distance_weight) * brightness_weight
         return np.where(near_core_halo, halo_alpha, 0.0).astype(np.float32, copy=False)
 
     def _green_screen_solid_layer(self, base_alpha: np.ndarray, frame: np.ndarray | None) -> np.ndarray:
@@ -918,6 +922,7 @@ class HybridMatte:
             ((effect_like >= 0.70) & (chroma <= 90.0) & (base_alpha <= 0.45))
             | ((brightness >= 190.0) & ((blue - green) >= 30.0) & ((blue - red) >= 50.0) & (base_alpha <= 0.35))
             | ((brightness >= 192.0) & (chroma <= 48.0) & ((blue - green) >= 35.0) & ((blue - red) >= 40.0) & (base_alpha <= 0.35))
+            | ((blue > 140.0) & (green > 120.0) & (red < 155.0) & (chroma >= 80.0) & (base_alpha <= 0.45))
         )
         color_coherent_subject = (base_alpha >= 0.20) | ((red >= 120.0) & (green < 180.0))
         anchor_seed = (
