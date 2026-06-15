@@ -609,6 +609,17 @@ class HybridMatte:
             )
             if composer is not None:
                 background_evidence = self._green_screen_background_evidence_layer(base_alpha, frame)
+                background_veto = background_evidence >= 0.50
+                solid_alpha = np.where(
+                    background_veto & (subject_confidence < 0.85),
+                    0.0,
+                    solid_alpha,
+                ).astype(np.float32, copy=False)
+                effect_alpha = np.where(
+                    background_veto & (effect_alpha < 0.85),
+                    0.0,
+                    effect_alpha,
+                ).astype(np.float32, copy=False)
                 subject_competitive_confidence = np.maximum(
                     subject_gate,
                     self._smoothstep(solid_alpha, 0.01, 0.35),
@@ -717,20 +728,14 @@ class HybridMatte:
                 cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
                 iterations=1,
             ).astype(bool)
-        core_reach = cv2.dilate(
-            luminous_core.astype(np.uint8, copy=False),
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25)),
-            iterations=1,
-        ).astype(bool)
         far_blue_background = (
-            (~core_reach)
+            (~luminous_core)
             & (~purple_subject)
             & (~screen_green)
-            & (blue > 140.0)
+            & (blue > 80.0)
             & (green > 120.0)
-            & (red < 150.0)
-            & (brightness > 120.0)
-            & (base_alpha < 0.45)
+            & (red < 170.0)
+            & (brightness > 80.0)
         )
         return far_blue_background.astype(np.float32, copy=False)
 
