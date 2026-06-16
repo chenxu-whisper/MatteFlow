@@ -645,8 +645,24 @@ class HybridMatte:
                     ),
                     background_evidence=background_evidence,
                 )
-                fused_alpha = composed.final_alpha
-                self.last_green_screen_layer_debug = composed.debug_layers
+                subject_core_solidify = self._green_screen_subject_owned_core_mask(
+                    composed.ownership.subject,
+                    solid_alpha,
+                    subject_confidence,
+                    background_evidence,
+                )
+                fused_alpha = self._green_screen_subject_owned_core_solidify(
+                    composed.final_alpha,
+                    subject_core_solidify,
+                )
+                debug_layers = dict(composed.debug_layers)
+                debug_layers["final_alpha"] = fused_alpha
+                debug_layers["subject_alpha_out"] = np.where(
+                    subject_core_solidify,
+                    fused_alpha,
+                    debug_layers["subject_alpha_out"],
+                ).astype(np.float32, copy=False)
+                self.last_green_screen_layer_debug = debug_layers
             else:
                 fused_alpha = self._soft_fuse_layers(solid_alpha, effect_alpha)
             self._log_transparency_fusion_stats("green_screen", solid_alpha, effect_alpha, fused_alpha)
@@ -661,6 +677,46 @@ class HybridMatte:
         solid = np.clip(solid_alpha.astype(np.float32, copy=False), 0.0, 1.0)
         effect = np.clip(effect_alpha.astype(np.float32, copy=False), 0.0, 1.0)
         return np.clip(solid + effect * (1.0 - solid), 0.0, 1.0)
+
+    def _green_screen_subject_owned_core_mask(
+        self,
+        subject_ownership: np.ndarray,
+        subject_alpha: np.ndarray,
+        subject_confidence: np.ndarray,
+        background_evidence: np.ndarray,
+    ) -> np.ndarray:
+        high_subject = (
+            (subject_ownership >= 0.95)
+            & (subject_confidence >= 0.95)
+            & (subject_alpha >= 0.80)
+            & (background_evidence < 0.50)
+        )
+        if not np.any(high_subject):
+            return np.zeros_like(subject_ownership, dtype=bool)
+
+        subject_uint = cv2.morphologyEx(
+            high_subject.astype(np.uint8, copy=False),
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (41, 41)),
+            iterations=1,
+        )
+        core = cv2.erode(
+            subject_uint,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (41, 41)),
+            iterations=1,
+        ).astype(bool)
+        core &= high_subject
+        return core
+
+    def _green_screen_subject_owned_core_solidify(
+        self,
+        final_alpha: np.ndarray,
+        core: np.ndarray,
+    ) -> np.ndarray:
+        if not np.any(core):
+            return final_alpha.astype(np.float32, copy=False)
+        solidified = np.where(core, 1.0, final_alpha)
+        return np.clip(solidified, 0.0, 1.0).astype(np.float32, copy=False)
 
     def _log_transparency_fusion_stats(
         self,
