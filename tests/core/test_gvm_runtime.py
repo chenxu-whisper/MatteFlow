@@ -1,5 +1,6 @@
 import importlib
 import sys
+import types
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -85,3 +86,67 @@ def test_gvm_processor_disables_low_cpu_mem_usage_for_diffusers_unet_fallback(
     wrapper.GVMProcessor(model_base=str(model_dir), device="cpu", seed=123)
 
     assert captured["FakeDiffusersUNet"]["kwargs"]["low_cpu_mem_usage"] is False
+
+
+def test_gvm_matte_uses_deterministic_processor_seed(monkeypatch, tmp_path):
+    import torch
+    from matteflow.config import MattingConfig
+    from matteflow.matte import gvm_matte
+
+    captured = {}
+
+    class FakeGVMProcessor:
+        def __init__(self, *args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            self.pipe = None
+            self.vae = None
+            self.unet = None
+
+    fake_wrapper = types.ModuleType("matteflow.vendor.gvm_core.wrapper")
+    fake_wrapper.GVMProcessor = FakeGVMProcessor
+
+    model_dir = tmp_path / "gvm"
+    for child in ("unet", "vae", "scheduler"):
+        (model_dir / child).mkdir(parents=True)
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setitem(sys.modules, "matteflow.vendor.gvm_core.wrapper", fake_wrapper)
+    monkeypatch.setattr(gvm_matte, "resolve_gvm_model_base", lambda _root: model_dir)
+
+    gvm_matte.GVMMatte(MattingConfig())
+
+    assert captured["kwargs"]["seed"] == 0
+
+
+def test_gvm_matte_reuses_processor_for_same_model_and_device(monkeypatch, tmp_path):
+    import torch
+    from matteflow.config import MattingConfig
+    from matteflow.matte import gvm_matte
+
+    constructed = []
+
+    class FakeGVMProcessor:
+        def __init__(self, *args, **kwargs):
+            constructed.append({"args": args, "kwargs": kwargs, "instance": self})
+            self.pipe = None
+            self.vae = None
+            self.unet = None
+
+    fake_wrapper = types.ModuleType("matteflow.vendor.gvm_core.wrapper")
+    fake_wrapper.GVMProcessor = FakeGVMProcessor
+
+    model_dir = tmp_path / "gvm"
+    for child in ("unet", "vae", "scheduler"):
+        (model_dir / child).mkdir(parents=True)
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setitem(sys.modules, "matteflow.vendor.gvm_core.wrapper", fake_wrapper)
+    monkeypatch.setattr(gvm_matte, "resolve_gvm_model_base", lambda _root: model_dir)
+    monkeypatch.setattr(gvm_matte, "_GVM_PROCESSOR_CACHE", {}, raising=False)
+
+    first = gvm_matte.GVMMatte(MattingConfig())
+    second = gvm_matte.GVMMatte(MattingConfig())
+
+    assert len(constructed) == 1
+    assert first.model is second.model

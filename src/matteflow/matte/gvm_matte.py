@@ -12,6 +12,7 @@
 import logging
 import tempfile
 from pathlib import Path
+from threading import RLock
 from typing import List, Optional
 
 import cv2
@@ -22,6 +23,10 @@ from ..config import MattingConfig
 from ..utils.model_paths import models_root, resolve_snapshot_model_dir
 
 logger = logging.getLogger(__name__)
+
+_GVM_PROCESSOR_CACHE = {}
+_GVM_PROCESSOR_CACHE_LOCK = RLock()
+_GVM_PROCESSOR_SEED = 0
 
 
 def resolve_gvm_model_base(models_root: Path) -> Optional[Path]:
@@ -58,11 +63,19 @@ class GVMMatte:
                 logger.warning("Weights not found under models root: %s", models_root())
                 raise RuntimeError("GVM weights not found")
 
-            logger.info("Loading GVM model from %s on device=%s", model_base, self.device)
-            self.model = GVMProcessor(
-                model_base=str(model_base),
-                device=str(self.device),
-            )
+            cache_key = (str(model_base.resolve()), str(self.device), _GVM_PROCESSOR_SEED)
+            with _GVM_PROCESSOR_CACHE_LOCK:
+                self.model = _GVM_PROCESSOR_CACHE.get(cache_key)
+                if self.model is None:
+                    logger.info("Loading GVM model from %s on device=%s", model_base, self.device)
+                    self.model = GVMProcessor(
+                        model_base=str(model_base),
+                        device=str(self.device),
+                        seed=_GVM_PROCESSOR_SEED,
+                    )
+                    _GVM_PROCESSOR_CACHE[cache_key] = self.model
+                else:
+                    logger.info("Reusing cached GVM model from %s on device=%s", model_base, self.device)
             self._force_cpu_float32_runtime()
             logger.info("Loaded GVM from vendored MatteFlow package on %s", self.device)
 
