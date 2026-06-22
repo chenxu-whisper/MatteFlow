@@ -20,7 +20,15 @@ from tqdm import tqdm
 # Assuming this file is inside gvm_core/
 from .gvm.pipelines.pipeline_gvm import GVMPipeline
 from .gvm.utils.inference_utils import VideoReader, VideoWriter, ImageSequenceReader, ImageSequenceWriter
-from .gvm.models.unet_spatio_temporal_condition import UNetSpatioTemporalConditionModel
+try:
+    from .gvm.models.unet_spatio_temporal_condition import UNetSpatioTemporalConditionModel
+except ModuleNotFoundError as exc:
+    if exc.name not in {
+        "matteflow.vendor.gvm_core.gvm.models",
+        f"{__package__}.gvm.models",
+    }:
+        raise
+    from diffusers import UNetSpatioTemporalConditionModel
 
 
 _BUNDLED_WEIGHTS_DIR = osp.join(osp.dirname(__file__), "weights")
@@ -114,7 +122,8 @@ class GVMProcessor:
             unet_folder, 
             subfolder="unet", 
             class_embed_type=None,
-            torch_dtype=self._dtype
+            torch_dtype=self._dtype,
+            low_cpu_mem_usage=False,
         )
 
         self.pipe = GVMPipeline(vae=self.vae, unet=self.unet, scheduler=self.scheduler)

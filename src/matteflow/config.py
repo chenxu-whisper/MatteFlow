@@ -66,6 +66,8 @@ class MattingConfig:
     # 白色保护参数（防止白色耳朵/毛发被误抠）
     white_protect_brightness: float = 180  # 白色保护亮度阈值 (0-255)
     white_protect_saturation: float = 25   # 白色保护饱和度阈值 (0-255)
+    white_ring_cleanup_strength: float = 1.0  # 白环外沿净化强度 (0-2)
+    glow_feather_strength: float = 1.0  # 辉光羽化强度 (0-2)
     
     # 边缘去绿参数
     edge_despill_factor: float = 1.2      # 边缘去绿强度系数 (0.5-2.0)

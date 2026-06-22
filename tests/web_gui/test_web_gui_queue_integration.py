@@ -119,6 +119,31 @@ def test_process_video_returns_queued_status_when_another_job_is_running(monkeyp
     assert progress.calls == []
 
 
+def test_process_video_failed_job_reports_real_error_message(monkeypatch, tmp_path):
+    progress = FakeProgress()
+    queue = GPUJobQueue()
+    output_dir = tmp_path / "out"
+    Image.fromarray(np.zeros((2, 2, 3), dtype=np.uint8), mode="RGB").save(tmp_path / "input.png")
+
+    class FailingService:
+        def process(self, params, progress_callback=None, cancel_check=None):
+            raise RuntimeError("真实处理错误")
+
+    monkeypatch.setattr(web_gui, "_resolve_gui_output_dir", lambda video_path: output_dir)
+
+    result = web_gui.process_video(
+        **_base_process_kwargs(tmp_path, progress),
+        queue_factory=lambda: queue,
+        worker_factory=lambda q, service: JobWorker(q, service),
+        service_factory=lambda: FailingService(),
+    )
+
+    assert queue.history_snapshot[0].status == JobStatus.FAILED
+    assert queue.history_snapshot[0].error_message == "真实处理错误"
+    assert "真实处理错误" in result[2]
+    assert "GPUJob" not in result[2]
+
+
 def test_cancel_current_job_requests_cancellation_for_running_job(tmp_path):
     queue = GPUJobQueue()
     running_job = queue.submit(

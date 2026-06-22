@@ -21,6 +21,8 @@ class HybridMatte:
     def __init__(self, config: MattingConfig):
         self.config = config
         self.last_active_ai_model = None
+        self.last_fallback_quality_metrics = None
+        self.last_green_screen_layer_debug = None
         self.rvm = None
         self.birefnet = None
         self.rmbg = None
@@ -357,6 +359,7 @@ class HybridMatte:
     ) -> List[np.ndarray]:
         """序列抠图"""
         self.last_active_ai_model = None
+        self.last_green_screen_layer_debug = None
         if bg_mode == BackgroundMode.GREEN_SCREEN:
             return self._green_screen_matte(frames, progress_callback, cancel_check)
         elif bg_mode == BackgroundMode.BLACK_BACKGROUND:
@@ -469,37 +472,199 @@ class HybridMatte:
                 suffix = " (auto)" if auto_selected else ""
                 logger.info("Using %s for green screen%s", ai_name.upper(), suffix)
                 ai_alphas = self._generate_with_engine(ai_engine, frames, progress_callback, cancel_check)
+                ai_name, ai_alphas = self._maybe_fallback_degenerate_gvm_sequence(
+                    ai_name,
+                    ai_alphas,
+                    base_alphas,
+                    frames,
+                    progress_callback,
+                    cancel_check,
+                )
+                self.last_active_ai_model = ai_name
         
         if ai_alphas is not None:
-            ai_alphas = self._merge_green_screen_effects(base_alphas, ai_alphas, frames)
+            semantic_subject_alphas = self._generate_green_screen_semantic_subject_alphas(
+                ai_name,
+                frames,
+                progress_callback,
+                cancel_check,
+            )
+            ai_alphas = self._merge_green_screen_effects(
+                base_alphas,
+                ai_alphas,
+                frames,
+                semantic_subject_alphas=semantic_subject_alphas,
+            )
             # 应用 Chroma Key 后处理
             from .chroma_key_postprocess import apply_chroma_key_postprocess
             return apply_chroma_key_postprocess(ai_alphas, self.config)
         
         return base_alphas
 
+    def _generate_green_screen_semantic_subject_alphas(
+        self,
+        ai_name: str | None,
+        frames: List[np.ndarray],
+        progress_callback=None,
+        cancel_check=None,
+    ) -> List[np.ndarray] | None:
+        if ai_name != "gvm" or not frames:
+            return None
+
+        semantic_engine = self.birefnet
+        if semantic_engine is None or getattr(semantic_engine, "model", None) is None:
+            semantic_engine = self._load_green_screen_fallback_engine("birefnet")
+        if semantic_engine is None or getattr(semantic_engine, "model", None) is None:
+            logger.info("Semantic subject trimap skipped: BiRefNet is unavailable")
+            return None
+
+        try:
+            logger.info("Building semantic subject trimap with BiRefNet for GVM green screen")
+            return self._generate_with_engine(semantic_engine, frames, progress_callback, cancel_check)
+        except Exception as exc:
+            logger.warning("Semantic subject trimap failed, continuing without it: %s", exc)
+            return None
+
     def _merge_green_screen_effects(
         self,
         base_alphas: List[np.ndarray],
         ai_alphas: List[np.ndarray],
         frames: List[np.ndarray] | None = None,
+        semantic_subject_alphas: List[np.ndarray] | None = None,
     ) -> List[np.ndarray]:
         """Preserve transparent screen-space effects that AI subject mattes often drop."""
         preserve = float(np.clip(getattr(self.config, "transparency_preserve", 0.7), 0.0, 1.0))
+        self.last_green_screen_layer_debug = None
         if preserve <= 0.0:
             return ai_alphas
 
+        use_competitive_composer = self.last_active_ai_model == "gvm"
+        composer = None
+        if use_competitive_composer:
+            from .green_screen_layer_composer import GreenScreenCompetitiveLayerComposer, LayerCandidate
+
+            composer = GreenScreenCompetitiveLayerComposer()
+
         merged: List[np.ndarray] = []
         frame_iter = frames if frames is not None else [None] * len(base_alphas)
-        for base_alpha, ai_alpha, frame in zip(base_alphas, ai_alphas, frame_iter):
+        semantic_iter = (
+            semantic_subject_alphas
+            if semantic_subject_alphas is not None
+            else [None] * len(base_alphas)
+        )
+        for base_alpha, ai_alpha, frame, semantic_subject_alpha in zip(base_alphas, ai_alphas, frame_iter, semantic_iter):
             base_alpha = np.clip(base_alpha.astype(np.float32, copy=False), 0.0, 1.0)
             ai_alpha = np.clip(ai_alpha.astype(np.float32, copy=False), 0.0, 1.0)
+            semantic_subject_alpha = (
+                np.clip(semantic_subject_alpha.astype(np.float32, copy=False), 0.0, 1.0)
+                if semantic_subject_alpha is not None
+                else None
+            )
+            gvm_fallback_mask = None
+            apply_gvm_subject_fallback = False
+            if self.last_active_ai_model == "gvm":
+                gvm_fallback_mask = self._green_screen_gvm_fallback_subject_mask(base_alpha, frame)
+                apply_gvm_subject_fallback = self._should_apply_gvm_subject_fallback(ai_alpha, base_alpha, gvm_fallback_mask)
+                ai_alpha = self._recover_degenerate_gvm_subject_alpha(ai_alpha, base_alpha, frame)
+            subject_confidence = self._green_screen_subject_confidence(ai_alpha, base_alpha, frame)
+            if semantic_subject_alpha is not None:
+                subject_confidence = np.maximum(
+                    subject_confidence,
+                    self._smoothstep(semantic_subject_alpha, 0.25, 0.75),
+                )
+            if (
+                self.last_active_ai_model == "gvm"
+                and frame is not None
+                and gvm_fallback_mask is not None
+                and apply_gvm_subject_fallback
+            ):
+                base_support = self._smoothstep(base_alpha, 0.30, 0.72)
+                subject_confidence = np.where(
+                    gvm_fallback_mask,
+                    np.maximum(subject_confidence, np.clip(0.25 + 0.90 * base_support, 0.0, 0.98)),
+                    subject_confidence,
+                )
+            subject_gate = self._smoothstep(subject_confidence, 0.45, 0.80)
             solid_alpha = np.maximum(
-                self._green_screen_ai_solid_layer(ai_alpha, base_alpha, frame),
+                self._green_screen_ai_subject_layer(ai_alpha, base_alpha, frame, subject_gate),
                 self._green_screen_solid_layer(base_alpha, frame),
             )
+            solid_alpha = np.maximum(
+                solid_alpha,
+                self._green_screen_score_blocked_subject_layer(base_alpha, frame),
+            )
+            solid_alpha = np.maximum(
+                solid_alpha,
+                self._green_screen_subject_integrity_layer(ai_alpha, base_alpha, frame, subject_gate),
+            )
+            solid_alpha = np.maximum(
+                solid_alpha,
+                self._green_screen_semantic_subject_layer(semantic_subject_alpha, frame),
+            )
             effect_alpha = self._green_screen_effect_layer(base_alpha, frame) * preserve
-            fused_alpha = self._soft_fuse_layers(solid_alpha, effect_alpha)
+            effect_alpha = effect_alpha * (1.0 - 0.85 * subject_gate)
+            effect_alpha = np.maximum(
+                effect_alpha,
+                self._green_screen_luminous_effect_reconstruction_layer(base_alpha, frame) * preserve,
+            )
+            if composer is not None:
+                background_evidence = self._green_screen_background_evidence_layer(base_alpha, frame)
+                background_veto = background_evidence >= 0.50
+                solid_alpha = np.where(
+                    background_veto & (subject_confidence < 0.85),
+                    0.0,
+                    solid_alpha,
+                ).astype(np.float32, copy=False)
+                effect_alpha = np.where(
+                    background_veto & (effect_alpha < 0.85),
+                    0.0,
+                    effect_alpha,
+                ).astype(np.float32, copy=False)
+                subject_competitive_confidence = np.maximum(
+                    subject_gate,
+                    self._smoothstep(solid_alpha, 0.01, 0.35),
+                )
+                effect_competitive_confidence = np.maximum(
+                    effect_alpha,
+                    np.where(
+                        effect_alpha > 0.0,
+                        0.40 + 0.45 * self._smoothstep(effect_alpha, 0.05, 0.35),
+                        0.0,
+                    ),
+                )
+                composed = composer.compose(
+                    subject=LayerCandidate(
+                        alpha=solid_alpha,
+                        confidence=subject_competitive_confidence,
+                        evidence=subject_confidence,
+                    ),
+                    effect=LayerCandidate(
+                        alpha=effect_alpha,
+                        confidence=effect_competitive_confidence,
+                        evidence=effect_alpha,
+                    ),
+                    background_evidence=background_evidence,
+                )
+                subject_core_solidify = self._green_screen_subject_owned_core_mask(
+                    composed.ownership.subject,
+                    solid_alpha,
+                    subject_confidence,
+                    background_evidence,
+                )
+                fused_alpha = self._green_screen_subject_owned_core_solidify(
+                    composed.final_alpha,
+                    subject_core_solidify,
+                )
+                debug_layers = dict(composed.debug_layers)
+                debug_layers["final_alpha"] = fused_alpha
+                debug_layers["subject_alpha_out"] = np.where(
+                    subject_core_solidify,
+                    fused_alpha,
+                    debug_layers["subject_alpha_out"],
+                ).astype(np.float32, copy=False)
+                self.last_green_screen_layer_debug = debug_layers
+            else:
+                fused_alpha = self._soft_fuse_layers(solid_alpha, effect_alpha)
             self._log_transparency_fusion_stats("green_screen", solid_alpha, effect_alpha, fused_alpha)
             merged.append(fused_alpha)
         return merged
@@ -512,6 +677,46 @@ class HybridMatte:
         solid = np.clip(solid_alpha.astype(np.float32, copy=False), 0.0, 1.0)
         effect = np.clip(effect_alpha.astype(np.float32, copy=False), 0.0, 1.0)
         return np.clip(solid + effect * (1.0 - solid), 0.0, 1.0)
+
+    def _green_screen_subject_owned_core_mask(
+        self,
+        subject_ownership: np.ndarray,
+        subject_alpha: np.ndarray,
+        subject_confidence: np.ndarray,
+        background_evidence: np.ndarray,
+    ) -> np.ndarray:
+        high_subject = (
+            (subject_ownership >= 0.95)
+            & (subject_confidence >= 0.95)
+            & (subject_alpha >= 0.80)
+            & (background_evidence < 0.50)
+        )
+        if not np.any(high_subject):
+            return np.zeros_like(subject_ownership, dtype=bool)
+
+        subject_uint = cv2.morphologyEx(
+            high_subject.astype(np.uint8, copy=False),
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (41, 41)),
+            iterations=1,
+        )
+        core = cv2.erode(
+            subject_uint,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (41, 41)),
+            iterations=1,
+        ).astype(bool)
+        core &= high_subject
+        return core
+
+    def _green_screen_subject_owned_core_solidify(
+        self,
+        final_alpha: np.ndarray,
+        core: np.ndarray,
+    ) -> np.ndarray:
+        if not np.any(core):
+            return final_alpha.astype(np.float32, copy=False)
+        solidified = np.where(core, 1.0, final_alpha)
+        return np.clip(solidified, 0.0, 1.0).astype(np.float32, copy=False)
 
     def _log_transparency_fusion_stats(
         self,
@@ -539,14 +744,358 @@ class HybridMatte:
             effect_alpha = np.maximum(effect_alpha, self._green_screen_white_ring_boost(base_alpha, frame))
         return np.clip(effect_alpha, 0.0, 1.0)
 
+    def _green_screen_background_evidence_layer(
+        self,
+        base_alpha: np.ndarray,
+        frame: np.ndarray | None,
+    ) -> np.ndarray:
+        """Identify low-support blue screen-space background away from luminous effects."""
+        if frame is None:
+            return np.zeros_like(base_alpha, dtype=np.float32)
+
+        frame_f = frame.astype(np.float32, copy=False)
+        red = frame_f[:, :, 0]
+        green = frame_f[:, :, 1]
+        blue = frame_f[:, :, 2]
+        brightness = (red + green + blue) / 3.0
+        chroma = np.maximum.reduce([red, green, blue]) - np.minimum.reduce([red, green, blue])
+        screen_green = (green > red + 30.0) & (green > blue + 20.0) & (green > 90.0)
+        purple_subject = (red > 120.0) & (blue > 130.0) & (green < 180.0)
+
+        white_core = (brightness > 205.0) & (chroma < 70.0)
+        blue_white_core = (
+            (brightness > 185.0)
+            & (blue > 150.0)
+            & (green > 140.0)
+            & (red > 130.0)
+            & (chroma < 95.0)
+        )
+        yellow_white_core = (red > 200.0) & (green > 155.0) & (blue > 90.0) & (brightness > 165.0)
+        luminous_core = (white_core | blue_white_core | yellow_white_core) & (~purple_subject) & (~screen_green)
+        component_count, labels = cv2.connectedComponents(luminous_core.astype(np.uint8), connectivity=8)
+        if component_count > 1:
+            component_sizes = np.bincount(labels.ravel())
+            keep_labels = np.where(component_sizes >= 12)[0]
+            keep_labels = keep_labels[keep_labels != 0]
+            luminous_core = np.isin(labels, keep_labels) if keep_labels.size else np.zeros_like(luminous_core)
+            luminous_core = cv2.morphologyEx(
+                luminous_core.astype(np.uint8, copy=False),
+                cv2.MORPH_CLOSE,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+                iterations=1,
+            ).astype(bool)
+        core_reach = cv2.dilate(
+            luminous_core.astype(np.uint8, copy=False),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25)),
+            iterations=1,
+        ).astype(bool)
+        cyan_halo_candidate = (
+            (blue > 140.0)
+            & (green > 120.0)
+            & (red < 155.0)
+            & (brightness > 120.0)
+            & (base_alpha < 0.45)
+            & (~purple_subject)
+            & (~screen_green)
+        )
+        near_luminous_cyan_halo = core_reach & (~luminous_core) & cyan_halo_candidate
+        far_blue_background = (
+            (~luminous_core)
+            & (~near_luminous_cyan_halo)
+            & (~purple_subject)
+            & (~screen_green)
+            & (blue > 80.0)
+            & (green > 120.0)
+            & (red < 170.0)
+            & (brightness > 80.0)
+        )
+        return far_blue_background.astype(np.float32, copy=False)
+
+    def _green_screen_luminous_effect_reconstruction_layer(
+        self,
+        base_alpha: np.ndarray,
+        frame: np.ndarray | None,
+    ) -> np.ndarray:
+        """Reconstruct bright lightning-like effect structures independently from subject alpha."""
+        if frame is None:
+            return np.zeros_like(base_alpha, dtype=np.float32)
+
+        frame_f = frame.astype(np.float32, copy=False)
+        red = frame_f[:, :, 0]
+        green = frame_f[:, :, 1]
+        blue = frame_f[:, :, 2]
+        brightness = (red + green + blue) / 3.0
+        chroma = np.maximum.reduce([red, green, blue]) - np.minimum.reduce([red, green, blue])
+
+        screen_green = (green > red + 30.0) & (green > blue + 20.0) & (green > 90.0)
+        white_core = (brightness > 205.0) & (chroma < 70.0)
+        blue_white_core = (brightness > 185.0) & (blue > 150.0) & (green > 140.0) & (red > 130.0) & (chroma < 95.0)
+        yellow_white_core = (red > 200.0) & (green > 155.0) & (blue > 90.0) & (brightness > 165.0)
+        core_mask = (white_core | blue_white_core | yellow_white_core) & (~screen_green)
+
+        component_count, labels = cv2.connectedComponents(core_mask.astype(np.uint8), connectivity=8)
+        if component_count <= 1:
+            return np.zeros_like(base_alpha, dtype=np.float32)
+
+        component_sizes = np.bincount(labels.ravel())
+        keep_labels = np.where(component_sizes >= 12)[0]
+        keep_labels = keep_labels[keep_labels != 0]
+        if keep_labels.size == 0:
+            return np.zeros_like(base_alpha, dtype=np.float32)
+
+        kept_core = np.isin(labels, keep_labels).astype(np.uint8)
+        bridge_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        kept_core = cv2.morphologyEx(kept_core, cv2.MORPH_CLOSE, bridge_kernel, iterations=1)
+
+        halo_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+        halo = cv2.dilate(kept_core, halo_kernel, iterations=1).astype(bool)
+        halo_color = (
+            ((brightness > 145.0) & (chroma < 120.0))
+            | ((blue > 135.0) & (green > 105.0) & (red > 95.0))
+            | ((red > 185.0) & (green > 120.0))
+        )
+        halo = halo & halo_color & (~screen_green)
+
+        core_alpha = kept_core.astype(np.float32)
+        halo_alpha = 0.34 * halo.astype(np.float32) * self._smoothstep(brightness / 255.0, 0.42, 0.82)
+        cyan_halo_alpha = self._green_screen_cyan_halo_band_layer(
+            kept_core.astype(bool),
+            base_alpha,
+            red,
+            green,
+            blue,
+            brightness,
+            screen_green,
+        )
+        return np.clip(np.maximum.reduce([core_alpha, halo_alpha, cyan_halo_alpha]), 0.0, 1.0).astype(np.float32, copy=False)
+
+    def _green_screen_cyan_halo_band_layer(
+        self,
+        core_mask: np.ndarray,
+        base_alpha: np.ndarray,
+        red: np.ndarray,
+        green: np.ndarray,
+        blue: np.ndarray,
+        brightness: np.ndarray,
+        screen_green: np.ndarray,
+    ) -> np.ndarray:
+        if not np.any(core_mask):
+            return np.zeros_like(base_alpha, dtype=np.float32)
+
+        core_reach = cv2.dilate(
+            core_mask.astype(np.uint8, copy=False),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25)),
+            iterations=1,
+        ).astype(bool)
+        cyan_halo_candidate = (
+            (blue > 140.0)
+            & (green > 120.0)
+            & (red < 150.0)
+            & (brightness > 120.0)
+            & (base_alpha < 0.45)
+            & (~screen_green)
+        )
+        near_core_halo = core_reach & (~core_mask) & cyan_halo_candidate
+        if not np.any(near_core_halo):
+            return np.zeros_like(base_alpha, dtype=np.float32)
+
+        distance_to_core = cv2.distanceTransform((~core_mask).astype(np.uint8), cv2.DIST_L2, 3)
+        distance_weight = np.clip((14.0 - distance_to_core) / 14.0, 0.0, 1.0)
+        brightness_weight = self._smoothstep(brightness / 255.0, 0.42, 0.72)
+        halo_alpha = (0.36 + 0.18 * distance_weight) * brightness_weight
+        return np.where(near_core_halo, halo_alpha, 0.0).astype(np.float32, copy=False)
+
     def _green_screen_solid_layer(self, base_alpha: np.ndarray, frame: np.ndarray | None) -> np.ndarray:
         if frame is None:
             return np.where(base_alpha >= 0.92, base_alpha, 0.0)
 
+        non_screen_mask = self._green_screen_non_screen_mask(frame)
         solid_color_mask = self._green_screen_solid_foreground_mask(frame)
         soft_subject_mask = self._green_screen_soft_subject_mask(frame)
-        solid_mask = ((base_alpha >= 0.92) & solid_color_mask) | ((base_alpha >= 0.28) & soft_subject_mask)
+        solid_mask = (
+            ((base_alpha >= 0.94) & non_screen_mask)
+            | ((base_alpha >= 0.92) & solid_color_mask)
+            | ((base_alpha >= 0.28) & soft_subject_mask)
+        )
         return np.where(solid_mask, 1.0, 0.0)
+
+    def _green_screen_score_blocked_subject_layer(
+        self,
+        base_alpha: np.ndarray,
+        frame: np.ndarray | None,
+    ) -> np.ndarray:
+        """Conservatively rescue soft subjects when GVM stays primary only because fallback quality is too weak."""
+        if frame is None or self.last_active_ai_model != "gvm":
+            return np.zeros_like(base_alpha, dtype=np.float32)
+
+        metrics = self.last_fallback_quality_metrics or {}
+        if not metrics.get("score_blocked") or metrics.get("effect_damage_blocked"):
+            return np.zeros_like(base_alpha, dtype=np.float32)
+
+        non_screen_mask = self._green_screen_non_screen_mask(frame)
+        soft_subject_mask = self._green_screen_soft_subject_mask(frame)
+        effect_like = self._green_screen_effect_color_weight(frame)
+        frame_f = frame.astype(np.float32, copy=False)
+        brightness = frame_f.mean(axis=2)
+        chroma = np.maximum.reduce(frame_f, axis=2) - np.minimum.reduce(frame_f, axis=2)
+        blue = frame_f[:, :, 2]
+        green = frame_f[:, :, 1]
+        red = frame_f[:, :, 0]
+        pale_halo_mask = (brightness >= 184.0) & (chroma <= 18.0) & (base_alpha <= 0.24)
+        cool_highlight_mask = (
+            (brightness >= 190.0)
+            & ((blue - green) >= 30.0)
+            & ((blue - red) >= 50.0)
+            & (base_alpha <= 0.30)
+        )
+        cool_gray_transition_mask = (
+            (brightness >= 192.0)
+            & (chroma <= 48.0)
+            & ((blue - green) >= 35.0)
+            & ((blue - red) >= 40.0)
+            & (effect_like >= 0.10)
+            & (base_alpha <= 0.30)
+        )
+        base_support = self._smoothstep(base_alpha, 0.18, 0.38)
+        solid_support = self._green_screen_solid_layer(base_alpha, frame)
+        rescue_mask = (
+            non_screen_mask
+            & soft_subject_mask
+            & (base_support > 0.10)
+            & (solid_support <= 0.0)
+            & (effect_like < 0.25)
+            & (~pale_halo_mask)
+            & (~cool_highlight_mask)
+            & (~cool_gray_transition_mask)
+        )
+        rescue_alpha = np.clip(base_alpha + 0.16 + 0.20 * base_support, 0.0, 0.72)
+        return np.where(rescue_mask, rescue_alpha, 0.0).astype(np.float32, copy=False)
+
+    def _green_screen_subject_integrity_layer(
+        self,
+        ai_alpha: np.ndarray,
+        base_alpha: np.ndarray,
+        frame: np.ndarray | None,
+        subject_gate: np.ndarray,
+    ) -> np.ndarray:
+        """Fill non-screen subject holes that are connected to confident subject structure."""
+        if frame is None or self.last_active_ai_model != "gvm":
+            return np.zeros_like(base_alpha, dtype=np.float32)
+        metrics = self.last_fallback_quality_metrics or {}
+        if metrics.get("effect_damage_blocked"):
+            return np.zeros_like(base_alpha, dtype=np.float32)
+
+        non_screen_mask = self._green_screen_non_screen_mask(frame)
+        solid_color_mask = self._green_screen_solid_foreground_mask(frame)
+        effect_like = self._green_screen_effect_color_weight(frame)
+        frame_f = frame.astype(np.float32, copy=False)
+        brightness = frame_f.mean(axis=2)
+        chroma = np.maximum.reduce(frame_f, axis=2) - np.minimum.reduce(frame_f, axis=2)
+        blue = frame_f[:, :, 2]
+        green = frame_f[:, :, 1]
+        red = frame_f[:, :, 0]
+
+        effect_veto = (
+            ((effect_like >= 0.70) & (chroma <= 90.0) & (base_alpha <= 0.45))
+            | ((brightness >= 190.0) & ((blue - green) >= 30.0) & ((blue - red) >= 50.0) & (base_alpha <= 0.35))
+            | ((brightness >= 192.0) & (chroma <= 48.0) & ((blue - green) >= 35.0) & ((blue - red) >= 40.0) & (base_alpha <= 0.35))
+            | ((blue > 140.0) & (green > 120.0) & (red < 155.0) & (chroma >= 80.0) & (base_alpha <= 0.45))
+        )
+        color_coherent_subject = (base_alpha >= 0.20) | ((red >= 120.0) & (green < 180.0))
+        anchor_seed = (
+            non_screen_mask
+            & (~effect_veto)
+            & ((ai_alpha >= 0.75) | (subject_gate >= 0.75))
+        )
+        anchor_reach = cv2.dilate(
+            anchor_seed.astype(np.uint8, copy=False),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (81, 81)),
+            iterations=1,
+        ).astype(bool)
+        seed_mask = (
+            anchor_seed
+            | (
+                anchor_reach
+                & non_screen_mask
+                & solid_color_mask
+                & color_coherent_subject
+                & (~effect_veto)
+            )
+        )
+        subject_instance_mask = self._green_screen_subject_instance_mask(seed_mask)
+        candidate_mask = (
+            (subject_instance_mask | (anchor_reach & color_coherent_subject))
+            & non_screen_mask
+            & (base_alpha <= 0.55)
+            & color_coherent_subject
+            & (~effect_veto)
+        )
+        if not np.any(candidate_mask) or not np.any(seed_mask):
+            return np.zeros_like(base_alpha, dtype=np.float32)
+
+        component_labels, labels = cv2.connectedComponents(candidate_mask.astype(np.uint8), connectivity=8)
+        if component_labels <= 1:
+            return np.zeros_like(base_alpha, dtype=np.float32)
+
+        seed_reach = cv2.dilate(seed_mask.astype(np.uint8), np.ones((7, 7), dtype=np.uint8), iterations=2).astype(bool)
+        connected_labels = np.unique(labels[seed_reach & candidate_mask])
+        connected_labels = connected_labels[connected_labels != 0]
+        if connected_labels.size == 0:
+            return np.zeros_like(base_alpha, dtype=np.float32)
+
+        component_sizes = np.bincount(labels.ravel())
+        connected_labels = connected_labels[component_sizes[connected_labels] >= 64]
+        if connected_labels.size == 0:
+            return np.zeros_like(base_alpha, dtype=np.float32)
+
+        connected_subject = np.isin(labels, connected_labels)
+        base_support = self._smoothstep(base_alpha, 0.03, 0.55)
+        recovery_alpha = np.clip(0.58 + 0.18 * base_support + 0.18 * subject_gate, 0.0, 0.82)
+        return np.where(connected_subject, recovery_alpha, 0.0).astype(np.float32, copy=False)
+
+    def _green_screen_semantic_subject_layer(
+        self,
+        semantic_subject_alpha: np.ndarray | None,
+        frame: np.ndarray | None,
+    ) -> np.ndarray:
+        if semantic_subject_alpha is None:
+            if frame is None:
+                return np.array(0.0, dtype=np.float32)
+            return np.zeros(frame.shape[:2], dtype=np.float32)
+
+        semantic_gate = self._smoothstep(semantic_subject_alpha, 0.25, 0.75)
+        semantic_subject = np.clip(0.82 * semantic_gate, 0.0, 0.92)
+        if frame is None:
+            return semantic_subject.astype(np.float32, copy=False)
+
+        non_screen_mask = self._green_screen_non_screen_mask(frame)
+        return np.where(non_screen_mask, semantic_subject, 0.0).astype(np.float32, copy=False)
+
+    def _green_screen_subject_instance_mask(self, seed_mask: np.ndarray) -> np.ndarray:
+        seed_uint = seed_mask.astype(np.uint8, copy=False)
+        if not np.any(seed_uint):
+            return np.zeros_like(seed_mask, dtype=bool)
+
+        close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (61, 61))
+        instance_uint = cv2.morphologyEx(seed_uint, cv2.MORPH_CLOSE, close_kernel, iterations=2)
+        dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (35, 35))
+        instance_uint = cv2.dilate(instance_uint, dilate_kernel, iterations=1)
+
+        component_count, labels = cv2.connectedComponents(instance_uint, connectivity=8)
+        if component_count <= 1:
+            return instance_uint.astype(bool)
+
+        component_sizes = np.bincount(labels.ravel())
+        keep_labels = np.where(component_sizes >= 512)[0]
+        keep_labels = keep_labels[keep_labels != 0]
+        if keep_labels.size == 0:
+            return np.zeros_like(seed_mask, dtype=bool)
+
+        instance_mask = np.isin(labels, keep_labels).astype(np.uint8)
+        contours, _ = cv2.findContours(instance_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        filled = np.zeros_like(instance_mask)
+        cv2.drawContours(filled, contours, -1, 1, thickness=cv2.FILLED)
+        return filled.astype(bool)
 
     def _green_screen_ai_solid_layer(
         self,
@@ -557,6 +1106,7 @@ class HybridMatte:
         if frame is None:
             return np.where((ai_alpha >= 0.98) & (base_alpha >= 0.75), ai_alpha, 0.0)
 
+        non_screen_mask = self._green_screen_non_screen_mask(frame)
         solid_color_mask = self._green_screen_solid_foreground_mask(frame)
         soft_subject_mask = self._green_screen_soft_subject_mask(frame)
         effect_like = self._green_screen_effect_color_weight(frame) > 0.45
@@ -564,11 +1114,347 @@ class HybridMatte:
             (ai_alpha >= 0.98)
             & (
                 (base_alpha >= 0.75)
-                | soft_subject_mask
+                | ((base_alpha >= 0.90) & non_screen_mask)
+                | (soft_subject_mask & ((~effect_like) | (base_alpha >= 0.32)))
                 | (solid_color_mask & (~effect_like) & (base_alpha >= 0.55))
             )
         )
         return np.where(ai_solid_mask, ai_alpha, 0.0)
+
+    def _green_screen_ai_subject_layer(
+        self,
+        ai_alpha: np.ndarray,
+        base_alpha: np.ndarray,
+        frame: np.ndarray | None,
+        subject_gate: np.ndarray,
+    ) -> np.ndarray:
+        """Promote AI subject alpha when confidence is high, but avoid white-ring takeover."""
+        confident_subject = ai_alpha * np.clip(subject_gate.astype(np.float32, copy=False), 0.0, 1.0)
+        return np.maximum(
+            self._green_screen_ai_solid_layer(ai_alpha, base_alpha, frame),
+            confident_subject,
+        )
+
+    def _green_screen_subject_confidence(
+        self,
+        ai_alpha: np.ndarray,
+        base_alpha: np.ndarray,
+        frame: np.ndarray | None,
+    ) -> np.ndarray:
+        """Estimate whether the AI alpha is a real subject region or just a transparent effect."""
+        ai_alpha = np.clip(ai_alpha.astype(np.float32, copy=False), 0.0, 1.0)
+        base_alpha = np.clip(base_alpha.astype(np.float32, copy=False), 0.0, 1.0)
+
+        ai_support = self._smoothstep(ai_alpha, 0.45, 0.92)
+        base_support = self._smoothstep(base_alpha, 0.08, 0.42)
+        confidence = 0.08 + 0.58 * ai_support + 0.18 * base_support
+
+        if frame is None:
+            return np.clip(confidence, 0.0, 1.0)
+
+        non_screen_mask = self._green_screen_non_screen_mask(frame).astype(np.float32)
+        solid_color_mask = self._green_screen_solid_foreground_mask(frame).astype(np.float32)
+        soft_subject_mask = self._green_screen_soft_subject_mask(frame).astype(np.float32)
+        effect_like = self._green_screen_effect_color_weight(frame)
+        subject_structure = np.maximum(solid_color_mask, soft_subject_mask) * base_support
+
+        confidence += 0.10 * non_screen_mask
+        confidence += 0.10 * np.maximum(solid_color_mask, soft_subject_mask)
+
+        # White rings and soft glows can have high AI alpha, but should stay in the effect branch
+        # when the traditional matte only provides weak structural support.
+        confidence *= 1.0 - 0.90 * effect_like * (1.0 - 0.75 * base_support) * (1.0 - 0.85 * subject_structure)
+
+        return np.clip(confidence, 0.0, 1.0)
+
+    def _maybe_fallback_degenerate_gvm_sequence(
+        self,
+        ai_name: str,
+        ai_alphas: List[np.ndarray] | None,
+        base_alphas: List[np.ndarray],
+        frames: List[np.ndarray],
+        progress_callback=None,
+        cancel_check=None,
+    ) -> tuple[str, List[np.ndarray] | None]:
+        self.last_fallback_quality_metrics = None
+        if ai_name != "gvm" or not ai_alphas or not self._is_degenerate_gvm_sequence(ai_alphas, base_alphas, frames):
+            return ai_name, ai_alphas
+
+        fallback_name, fallback_engine = self._select_green_screen_fallback_ai_engine(exclude_name="gvm")
+        if fallback_engine is None:
+            return ai_name, ai_alphas
+
+        logger.info("Detected degenerate GVM sequence, falling back to %s", fallback_name.upper())
+        fallback_alphas = self._generate_with_engine(fallback_engine, frames, progress_callback, cancel_check)
+        if not self._is_materially_better_fallback(ai_alphas, fallback_alphas, base_alphas, frames):
+            logger.info("Fallback engine %s is not materially better than GVM, keeping GVM", fallback_name.upper())
+            return ai_name, ai_alphas
+        return fallback_name, fallback_alphas
+
+    def _is_degenerate_gvm_sequence(
+        self,
+        ai_alphas: List[np.ndarray],
+        base_alphas: List[np.ndarray],
+        frames: List[np.ndarray],
+    ) -> bool:
+        if not ai_alphas or not frames or len(ai_alphas) != len(base_alphas) or len(ai_alphas) != len(frames):
+            return False
+
+        fallback_hits = 0
+        broad_support_hits = 0
+        for ai_alpha, base_alpha, frame in zip(ai_alphas, base_alphas, frames):
+            subject_mask = self._green_screen_gvm_fallback_subject_mask(base_alpha, frame)
+            if self._should_apply_gvm_subject_fallback(ai_alpha, base_alpha, subject_mask):
+                fallback_hits += 1
+                continue
+            if self._is_broad_degenerate_gvm_frame(ai_alpha, base_alpha, frame):
+                broad_support_hits += 1
+
+        minimum_hits = max(2, (len(frames) + 1) // 2)
+        return fallback_hits >= minimum_hits or broad_support_hits >= minimum_hits
+
+    @staticmethod
+    def _masked_mean(alpha: np.ndarray, mask: np.ndarray) -> float | None:
+        return float(alpha[mask].mean()) if mask.any() else None
+
+    def _build_region_weighted_fallback_masks(
+        self,
+        source_alpha: np.ndarray,
+        fallback_alpha: np.ndarray,
+        base_alpha: np.ndarray,
+        frame: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        reference_alpha = np.maximum(
+            np.clip(np.asarray(source_alpha, dtype=np.float32), 0.0, 1.0),
+            np.clip(np.asarray(fallback_alpha, dtype=np.float32), 0.0, 1.0),
+        )
+        subject_confidence = self._green_screen_subject_confidence(reference_alpha, base_alpha, frame)
+        subject_gate = self._smoothstep(subject_confidence, 0.45, 0.80)
+        entity_mask = subject_gate >= 0.55
+        effect_mask = (self._green_screen_effect_color_weight(frame) >= 0.35) & (subject_gate <= 0.35)
+        transition_mask = (~entity_mask) & (~effect_mask) & (base_alpha > 0.02)
+        return entity_mask, effect_mask, transition_mask
+
+    def _compute_region_weighted_fallback_quality(
+        self,
+        source_alphas: List[np.ndarray],
+        fallback_alphas: List[np.ndarray],
+        base_alphas: List[np.ndarray],
+        frames: List[np.ndarray],
+    ) -> dict[str, float] | None:
+        if (
+            not source_alphas
+            or not fallback_alphas
+            or not base_alphas
+            or not frames
+            or len(source_alphas) != len(fallback_alphas)
+            or len(source_alphas) != len(base_alphas)
+            or len(source_alphas) != len(frames)
+        ):
+            return None
+
+        entity_deltas: List[float] = []
+        effect_deltas: List[float] = []
+        transition_deltas: List[float] = []
+        source_means: List[float] = []
+        fallback_means: List[float] = []
+
+        for source_alpha, fallback_alpha, base_alpha, frame in zip(source_alphas, fallback_alphas, base_alphas, frames):
+            source = np.clip(np.asarray(source_alpha, dtype=np.float32), 0.0, 1.0)
+            fallback = np.clip(np.asarray(fallback_alpha, dtype=np.float32), 0.0, 1.0)
+            base = np.clip(np.asarray(base_alpha, dtype=np.float32), 0.0, 1.0)
+            entity_mask, effect_mask, transition_mask = self._build_region_weighted_fallback_masks(source, fallback, base, frame)
+
+            source_means.append(float(source.mean()))
+            fallback_means.append(float(fallback.mean()))
+
+            source_entity_mean = self._masked_mean(source, entity_mask)
+            fallback_entity_mean = self._masked_mean(fallback, entity_mask)
+            source_effect_mean = self._masked_mean(source, effect_mask)
+            fallback_effect_mean = self._masked_mean(fallback, effect_mask)
+            source_transition_mean = self._masked_mean(source, transition_mask)
+            fallback_transition_mean = self._masked_mean(fallback, transition_mask)
+
+            entity_deltas.append((fallback_entity_mean or 0.0) - (source_entity_mean or 0.0))
+            effect_deltas.append((fallback_effect_mean or 0.0) - (source_effect_mean or 0.0))
+            transition_deltas.append((fallback_transition_mean or 0.0) - (source_transition_mean or 0.0))
+
+        entity_delta = float(np.mean(entity_deltas)) if entity_deltas else 0.0
+        effect_delta = float(np.mean(effect_deltas)) if effect_deltas else 0.0
+        transition_delta = float(np.mean(transition_deltas)) if transition_deltas else 0.0
+        global_mean_delta = float(np.mean(fallback_means) - np.mean(source_means)) if source_means and fallback_means else 0.0
+        weighted_score = 0.65 * entity_delta + 0.20 * transition_delta + 0.15 * effect_delta
+
+        return {
+            "entity_delta": entity_delta,
+            "effect_delta": effect_delta,
+            "transition_delta": transition_delta,
+            "global_mean_delta": global_mean_delta,
+            "weighted_score": weighted_score,
+        }
+
+    def _is_materially_better_fallback(
+        self,
+        source_alphas: List[np.ndarray],
+        fallback_alphas: List[np.ndarray],
+        base_alphas: List[np.ndarray],
+        frames: List[np.ndarray],
+    ) -> bool:
+        metrics = self._compute_region_weighted_fallback_quality(source_alphas, fallback_alphas, base_alphas, frames)
+        if metrics is None:
+            self.last_fallback_quality_metrics = None
+            return False
+
+        effect_delta = metrics["effect_delta"]
+        weighted_score = metrics["weighted_score"]
+        effect_damage_blocked = effect_delta < -0.03
+        score_blocked = weighted_score < 0.02
+        self.last_fallback_quality_metrics = {
+            **metrics,
+            "effect_damage_blocked": effect_damage_blocked,
+            "score_blocked": score_blocked,
+            "accepted": (not effect_damage_blocked) and (not score_blocked),
+        }
+        if effect_damage_blocked:
+            logger.info(
+                "Rejecting fallback by quality gate: effect_delta=%.4f weighted_score=%.4f global_mean_delta=%.4f",
+                effect_delta,
+                weighted_score,
+                metrics["global_mean_delta"],
+            )
+            return False
+        if score_blocked:
+            logger.info(
+                "Rejecting fallback by quality gate: weighted_score=%.4f entity_delta=%.4f effect_delta=%.4f transition_delta=%.4f global_mean_delta=%.4f",
+                weighted_score,
+                metrics["entity_delta"],
+                effect_delta,
+                metrics["transition_delta"],
+                metrics["global_mean_delta"],
+            )
+            return False
+
+        logger.info(
+            "Accepting fallback by quality gate: weighted_score=%.4f entity_delta=%.4f effect_delta=%.4f transition_delta=%.4f global_mean_delta=%.4f",
+            weighted_score,
+            metrics["entity_delta"],
+            effect_delta,
+            metrics["transition_delta"],
+            metrics["global_mean_delta"],
+        )
+        return True
+
+    def _is_broad_degenerate_gvm_frame(
+        self,
+        ai_alpha: np.ndarray,
+        base_alpha: np.ndarray,
+        frame: np.ndarray,
+    ) -> bool:
+        ai_mean = float(np.mean(np.clip(ai_alpha, 0.0, 1.0)))
+        if ai_mean >= 0.06:
+            return False
+
+        non_screen_mask = self._green_screen_non_screen_mask(frame)
+        base_support = self._smoothstep(base_alpha, 0.20, 0.50)
+        broad_support_mask = non_screen_mask & (base_support > 0.30)
+        broad_support_ratio = float(np.mean(broad_support_mask))
+        if broad_support_ratio < 0.18:
+            return False
+
+        transition_ratio = float(np.mean((base_alpha > 0.08) & (base_alpha < 0.75)))
+        effect_like_mean = float(np.mean(self._green_screen_effect_color_weight(frame)[broad_support_mask]))
+        return transition_ratio >= 0.20 and effect_like_mean < 0.65
+
+    def _select_green_screen_fallback_ai_engine(self, exclude_name: str) -> tuple[str | None, object | None]:
+        fallback_candidates = (
+            ("corridorkey", self.corridorkey, "model"),
+            ("rembg", self.rembg, "_available"),
+            ("birefnet", self.birefnet, "model"),
+            ("rvm", self.rvm, "model"),
+        )
+        for name, engine, attr in fallback_candidates:
+            if name == exclude_name:
+                continue
+            if engine is None:
+                engine = self._load_green_screen_fallback_engine(name)
+                if engine is None:
+                    continue
+            if attr == "_available":
+                if getattr(engine, "_available", False):
+                    return name, engine
+                continue
+            if getattr(engine, attr, None) is not None:
+                return name, engine
+        return None, None
+
+    def _load_green_screen_fallback_engine(self, name: str):
+        loader_name = f"_load_{name}"
+        loader = getattr(self, loader_name, None)
+        if loader is None:
+            return getattr(self, name, None)
+        try:
+            loader(self.config)
+        except Exception as exc:
+            logger.warning("Failed to lazy-load fallback engine %s: %s", name, exc)
+        return getattr(self, name, None)
+
+    def _recover_degenerate_gvm_subject_alpha(
+        self,
+        ai_alpha: np.ndarray,
+        base_alpha: np.ndarray,
+        frame: np.ndarray | None,
+    ) -> np.ndarray:
+        """Recover subject support from the chroma-key base when GVM collapses on a frame."""
+        if frame is None:
+            return ai_alpha
+
+        subject_mask = self._green_screen_gvm_fallback_subject_mask(base_alpha, frame)
+        if not self._should_apply_gvm_subject_fallback(ai_alpha, base_alpha, subject_mask):
+            return ai_alpha
+
+        recovered = np.where(subject_mask, np.maximum(ai_alpha, np.clip(base_alpha * 0.98, 0.0, 1.0)), ai_alpha)
+        return recovered.astype(np.float32, copy=False)
+
+    def _green_screen_gvm_fallback_subject_mask(
+        self,
+        base_alpha: np.ndarray,
+        frame: np.ndarray,
+    ) -> np.ndarray:
+        """Identify subject-like regions that can safely fall back to the traditional matte."""
+        non_screen_mask = self._green_screen_non_screen_mask(frame)
+        solid_color_mask = self._green_screen_solid_foreground_mask(frame)
+        soft_subject_mask = self._green_screen_soft_subject_mask(frame)
+        effect_like = self._green_screen_effect_color_weight(frame)
+
+        reliable_base = self._smoothstep(base_alpha, 0.30, 0.72) > 0.35
+        return (
+            non_screen_mask
+            & reliable_base
+            & (solid_color_mask | soft_subject_mask | (base_alpha >= 0.50))
+            & ((effect_like < 0.35) | ((solid_color_mask | soft_subject_mask) & (base_alpha >= 0.45)))
+        )
+
+    def _should_apply_gvm_subject_fallback(
+        self,
+        ai_alpha: np.ndarray,
+        base_alpha: np.ndarray,
+        subject_mask: np.ndarray,
+    ) -> bool:
+        if not np.any(subject_mask):
+            return False
+
+        ai_support = self._smoothstep(ai_alpha, 0.25, 0.70)
+        base_support = self._smoothstep(base_alpha, 0.30, 0.72)
+        ai_subject_strength = float(ai_support[subject_mask].mean())
+        base_subject_strength = float(base_support[subject_mask].mean())
+        return ai_subject_strength < 0.08 and base_subject_strength >= 0.35
+
+    def _green_screen_non_screen_mask(self, frame: np.ndarray) -> np.ndarray:
+        """Detect colors that are clearly not the backing screen for solid-subject fallback."""
+        frame_f = frame.astype(np.float32, copy=False)
+        r, g, b = frame_f[:, :, 0], frame_f[:, :, 1], frame_f[:, :, 2]
+        screen_green = (g > r + 30.0) & (g > b + 20.0) & (g > 90.0)
+        return ~screen_green
 
     def _green_screen_effect_color_weight(self, frame: np.ndarray) -> np.ndarray:
         """Keep pink/white glow while suppressing green-screen colored haze blobs."""

@@ -34,3 +34,16 @@ def test_resolve_gui_output_dir_avoids_overwriting_non_empty_directory(tmp_path)
     assert result.parent == output_root
     assert result.name.startswith("test_green_2_")
     assert result.exists()
+
+
+def test_resolve_gui_output_dir_uses_job_token_for_request_isolation(tmp_path):
+    output_root = tmp_path / "temp" / "output"
+
+    result = web_gui._resolve_gui_output_dir(
+        video_path=Path("assets/video/test_green_2.mp4"),
+        output_root=output_root,
+        job_token="job 123",
+    )
+
+    assert result == output_root / "test_green_2_job_123"
+    assert result.exists()

@@ -19,5 +19,9 @@ class JobCancelledError(MatteFlowError):
     """Raised when a user-requested cancellation stops processing."""
 
 
+class ProgressCallbackError(MatteFlowError):
+    """Raised when a progress callback crashes during processing."""
+
+
 class ProcessingError(MatteFlowError):
     """Raised when media processing fails after a job has started."""
