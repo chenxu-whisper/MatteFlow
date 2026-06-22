@@ -33,7 +33,7 @@ class MattingConfig:
     # ==================== AI 模型选择 ====================
     ai_model: str = "auto"  # "auto" | "gvm" | "matanyone2" | "corridorkey" | "birefnet" | "rvm" | "rembg" | "sam2"
     
-    # ==================== Chroma Key 参数 (对齐 EZ-CorridorKey) ====================
+    # ==================== Chroma Key ====================
     # 屏幕颜色检测/设置
     screen_color: str = "auto"          # "auto" | "green" | "blue" — 屏幕颜色
     screen_color_auto_detect: bool = True  # 自动检测绿/蓝屏
@@ -96,22 +96,22 @@ class MattingConfig:
     pure_color_mode: bool = False         # 纯色绿幕模式（更激进的背景去除）
     use_guided_filter: bool = False       # 是否使用导向滤波
     
-    # ==================== EZ-CorridorKey 风格后处理参数 ====================
+    # ==================== 后处理参数 ====================
     # 去溢色 (Despill)
     despill_enable: bool = True           # 启用去溢色
-    despill_strength: float = 0.5         # 去溢色强度 0.0~1.0，对齐 EZ-CorridorKey 默认 0.5
+    despill_strength: float = 0.5         # 去溢色强度 0.0~1.0，默认 0.5
     despill_color: str = "auto"           # "green" | "blue" | "auto"
     
     # 去噪点 (Auto-Despeckle)
     auto_despeckle: bool = True           # 启用自动去噪点
-    despeckle_size: int = 400             # 噪点最小面积（像素数），对齐 EZ-CorridorKey
+    despeckle_size: int = 400             # 噪点最小面积（像素数），默认 400
     despeckle_dilation: int = 25          # 去噪膨胀半径
     despeckle_blur: int = 5               # 去噪模糊半径
     auto_despeckle_threshold: float = 0.0 # 仅清除低于阈值的 alpha 噪点，不影响 clip_black
     
     # 边缘细化 (Refiner)
     refiner_enable: bool = True           # 启用边缘细化
-    refiner_scale: float = 1.0            # 细化强度倍数 0.0~2.0，对齐 EZ-CorridorKey
+    refiner_scale: float = 1.0            # 细化强度倍数 0.0~2.0，默认 1.0
     
     # 源像素直通 (Source Passthrough)
     source_passthrough: bool = True       # 不透明区域使用原始像素
@@ -121,7 +121,7 @@ class MattingConfig:
     # 垃圾遮罩 (Garbage Matte)
     garbage_matte_px: int = 0             # 垃圾遮罩扩展像素
     
-    # ==================== 输出参数（对齐 EZ-CorridorKey） ====================
+    # ==================== 输出参数 ====================
     output_format: str = "png"            # png / exr / tga
     output_premultiplied: bool = False    # 是否预乘 alpha
     output_mask: bool = False             # 是否输出黑白遮罩
