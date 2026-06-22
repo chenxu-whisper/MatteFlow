@@ -30,6 +30,8 @@ def test_gui_defaults_match_checker_000040_preset():
     assert defaults["green_hair"] == 0.8
     assert defaults["white_protect_brightness"] == 180
     assert defaults["white_protect_saturation"] == 25
+    assert defaults["white_ring_cleanup_strength"] == 1.0
+    assert defaults["glow_feather_strength"] == 1.0
     assert defaults["edge_despill_factor"] == 1.2
     assert defaults["screen_color"] == "auto"
     assert defaults["key_strength"] == 1.0
@@ -91,6 +93,8 @@ def test_apply_recommended_preset_uses_checker_000040_values(monkeypatch):
     assert preset["green_hair"] == 0.8
     assert preset["white_protect_thresh"] == 180
     assert preset["white_protect_sat"] == 25
+    assert preset["white_ring_cleanup_strength"] == 1.0
+    assert preset["glow_feather_strength"] == 1.0
     assert preset["edge_despill_factor"] == 1.2
     assert preset["screen_color"] == "auto"
     assert preset["key_strength"] == 1.0
@@ -283,6 +287,8 @@ def test_process_video_applies_effective_advanced_controls(monkeypatch, tmp_path
         green_hair=0.8,
         white_protect_thresh=180,
         white_protect_sat=25,
+        white_ring_cleanup_strength=0.85,
+        glow_feather_strength=1.15,
         edge_despill_factor=1.2,
         black_threshold=0.03,
         black_glow=0.9,
@@ -323,6 +329,8 @@ def test_process_video_applies_effective_advanced_controls(monkeypatch, tmp_path
     assert overrides["green_hair_detail"] == 0.8
     assert overrides["white_protect_brightness"] == 180
     assert overrides["white_protect_saturation"] == 25
+    assert overrides["white_ring_cleanup_strength"] == 0.85
+    assert overrides["glow_feather_strength"] == 1.15
     assert overrides["edge_despill_factor"] == 1.2
     assert overrides["screen_color"] == "auto"
     assert overrides["key_strength"] == 1.0
@@ -392,6 +400,8 @@ def test_process_video_applies_auto_optimized_input_params(monkeypatch, tmp_path
         green_hair=0.8,
         white_protect_thresh=180,
         white_protect_sat=25,
+        white_ring_cleanup_strength=1.0,
+        glow_feather_strength=1.0,
         edge_despill_factor=1.2,
         black_threshold=0.03,
         black_glow=0.9,
@@ -437,6 +447,8 @@ def test_process_video_applies_auto_optimized_input_params(monkeypatch, tmp_path
     assert "edge_despill=1.20" in status
     assert "clip=0.00/1.00" in status
     assert "white_protect=180/25" in status
+    assert "ring_cleanup=1.00" in status
+    assert "glow_feather=1.00" in status
     assert "shrink_grow=0" in status
     assert "edge_blur=0" in status
     assert "gvm_size=768" in status
@@ -464,6 +476,8 @@ def test_process_video_formats_failures_with_diagnostics(monkeypatch, tmp_path):
         green_hair=0.8,
         white_protect_thresh=180,
         white_protect_sat=25,
+        white_ring_cleanup_strength=1.0,
+        glow_feather_strength=1.0,
         edge_despill_factor=1.2,
         black_threshold=0.03,
         black_glow=0.9,

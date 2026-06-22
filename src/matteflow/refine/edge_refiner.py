@@ -47,15 +47,30 @@ class EdgeRefiner:
     
     def _generate_trimap(self, alpha: np.ndarray) -> np.ndarray:
         """生成 trimap"""
-        # 硬阈值
-        fg_mask = alpha > 0.9
-        bg_mask = alpha < 0.1
-        
-        # 未知区域
+        feather_strength = float(np.clip(getattr(self.config, "glow_feather_strength", 1.0), 0.0, 2.0))
+        fg_mask = alpha >= 0.95
+        bg_mask = alpha <= 0.05
+
+        soft_mask = (alpha > 0.02) & (alpha < 0.98)
+        expanded_soft = soft_mask.copy()
+        if feather_strength > 0.0 and np.any(soft_mask):
+            expansion_radius = int(round(feather_strength))
+            if expansion_radius > 0:
+                soft_kernel_size = expansion_radius * 2 + 1
+                soft_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (soft_kernel_size, soft_kernel_size))
+                expanded_soft = cv2.dilate(soft_mask.astype(np.uint8), soft_kernel, iterations=1).astype(bool)
+
+        boundary_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        boundary_band = cv2.dilate(fg_mask.astype(np.uint8), boundary_kernel, iterations=1).astype(bool) & cv2.dilate(
+            bg_mask.astype(np.uint8), boundary_kernel, iterations=1
+        ).astype(bool)
+        unknown_mask = expanded_soft | boundary_band
+
         trimap = np.full(alpha.shape, 128, dtype=np.uint8)
         trimap[fg_mask] = 255
         trimap[bg_mask] = 0
-        
+        trimap[unknown_mask] = 128
+
         return trimap
     
     def _local_guided_filter(self, guide: np.ndarray, src: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -65,7 +80,10 @@ class EdgeRefiner:
         
         # 仅在 mask 区域应用平滑
         src_u8 = (src * 255).astype(np.uint8)
-        smoothed = cv2.GaussianBlur(src_u8, (5, 5), 0).astype(np.float32) / 255.0
+        feather_strength = float(np.clip(getattr(self.config, "glow_feather_strength", 1.0), 0.0, 2.0))
+        blur_radius = int(round(2 + feather_strength * 2))
+        blur_kernel = blur_radius * 2 + 1
+        smoothed = cv2.GaussianBlur(src_u8, (blur_kernel, blur_kernel), 0).astype(np.float32) / 255.0
         
         # 保留非边缘区域的原值
         result = np.where(mask, smoothed, result)

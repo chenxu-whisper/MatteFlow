@@ -47,6 +47,8 @@ def _base_process_kwargs(tmp_path, progress):
         green_hair=0.8,
         white_protect_thresh=180,
         white_protect_sat=25,
+        white_ring_cleanup_strength=1.0,
+        glow_feather_strength=1.0,
         edge_despill_factor=1.2,
         black_threshold=0.03,
         black_glow=0.9,

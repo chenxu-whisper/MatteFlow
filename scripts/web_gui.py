@@ -67,6 +67,8 @@ GUI_DEFAULTS = {
     "green_hair": 0.8,
     "white_protect_brightness": 180,
     "white_protect_saturation": 25,
+    "white_ring_cleanup_strength": 1.0,
+    "glow_feather_strength": 1.0,
     "edge_despill_factor": 1.2,
     "screen_color": "auto",
     "key_strength": 1.0,
@@ -123,6 +125,8 @@ RECOMMENDED_PRESET_OUTPUT_KEYS = [
     "green_hair",
     "white_protect_thresh",
     "white_protect_sat",
+    "white_ring_cleanup_strength",
+    "glow_feather_strength",
     "edge_despill_factor",
     "screen_color",
     "key_strength",
@@ -455,6 +459,8 @@ def _apply_recommended_preset() -> dict:
         "green_hair": GUI_DEFAULTS["green_hair"],
         "white_protect_thresh": GUI_DEFAULTS["white_protect_brightness"],
         "white_protect_sat": GUI_DEFAULTS["white_protect_saturation"],
+        "white_ring_cleanup_strength": GUI_DEFAULTS["white_ring_cleanup_strength"],
+        "glow_feather_strength": GUI_DEFAULTS["glow_feather_strength"],
         "edge_despill_factor": GUI_DEFAULTS["edge_despill_factor"],
         "screen_color": GUI_DEFAULTS["screen_color"],
         "key_strength": GUI_DEFAULTS["key_strength"],
@@ -548,6 +554,8 @@ def _build_process_job_params(video_path, output_dir, config):
         "green_hair_detail": config.green_hair_detail,
         "white_protect_brightness": config.white_protect_brightness,
         "white_protect_saturation": config.white_protect_saturation,
+        "white_ring_cleanup_strength": config.white_ring_cleanup_strength,
+        "glow_feather_strength": config.glow_feather_strength,
         "edge_despill_factor": config.edge_despill_factor,
         "black_threshold": config.black_threshold,
         "black_glow_preserve": config.black_glow_preserve,
@@ -771,6 +779,8 @@ def process_video(
     green_hair,
     white_protect_thresh,
     white_protect_sat,
+    white_ring_cleanup_strength,
+    glow_feather_strength,
     edge_despill_factor,
     black_threshold,
     black_glow,
@@ -871,6 +881,8 @@ def process_video(
     config.green_hair_detail = green_hair
     config.white_protect_brightness = white_protect_thresh
     config.white_protect_saturation = white_protect_sat
+    config.white_ring_cleanup_strength = white_ring_cleanup_strength
+    config.glow_feather_strength = glow_feather_strength
     config.edge_despill_factor = edge_despill_factor
     config.black_threshold = black_threshold
     config.black_glow_preserve = black_glow
@@ -970,7 +982,13 @@ def process_video(
         preview_output = None
 
         if job.status == JobStatus.FAILED:
-            return None, None, f"❌ 处理失败: {job.error_message or 'processing failed'}", None, None, 0, None
+            error_message = job.error_message or "processing failed"
+            report = from_exception(
+                RuntimeError(error_message),
+                context={"stage": "process_video", "input_path": str(video_path)},
+            )
+            status = f"{_format_diagnostic_report(report)}\n错误详情: {error_message}"
+            return None, None, status, None, None, 0, None
         if job.status == JobStatus.CANCELLED:
             return None, None, "⏹ 已取消", None, None, 0, None
 
@@ -1065,6 +1083,8 @@ def _format_actual_parameter_summary(config):
         f"edge_despill={config.edge_despill_factor:.2f}, "
         f"clip={config.clip_black:.2f}/{config.clip_white:.2f}, "
         f"white_protect={config.white_protect_brightness:.0f}/{config.white_protect_saturation:.0f}, "
+        f"ring_cleanup={config.white_ring_cleanup_strength:.2f}, "
+        f"glow_feather={config.glow_feather_strength:.2f}, "
         f"shrink_grow={config.shrink_grow}, "
         f"edge_blur={config.edge_blur}, "
         f"gvm_size={config.gvm_max_internal_size}"
@@ -1571,6 +1591,20 @@ def create_ui():
                         )
                         white_protect_thresh = gr.Slider(150, 255, value=GUI_DEFAULTS["white_protect_brightness"], step=5, label="白色保护亮度")
                         white_protect_sat = gr.Slider(10, 60, value=GUI_DEFAULTS["white_protect_saturation"], step=1, label="白色保护饱和度")
+                        white_ring_cleanup_strength = gr.Slider(
+                            0.0, 2.0,
+                            value=GUI_DEFAULTS["white_ring_cleanup_strength"],
+                            step=0.05,
+                            label="白环外沿净化",
+                            info="只净化白环外侧的青绿污染，降低能保留更多青蓝辉光"
+                        )
+                        glow_feather_strength = gr.Slider(
+                            0.0, 2.0,
+                            value=GUI_DEFAULTS["glow_feather_strength"],
+                            step=0.05,
+                            label="辉光羽化强度",
+                            info="适度放宽白环和辉光外沿的 alpha 过渡，降低硬边和二值化感"
+                        )
                         with gr.Row():
                             clip_black = gr.Slider(
                                 0.0, 1.0, value=GUI_DEFAULTS["clip_black"], step=0.01,
@@ -1759,6 +1793,8 @@ def create_ui():
             green_hair,
             white_protect_thresh,
             white_protect_sat,
+            white_ring_cleanup_strength,
+            glow_feather_strength,
             edge_despill_factor,
             screen_color,
             key_strength,
@@ -1805,6 +1841,8 @@ def create_ui():
                 green_hair,
                 white_protect_thresh,
                 white_protect_sat,
+                white_ring_cleanup_strength,
+                glow_feather_strength,
                 edge_despill_factor,
                 black_thresh,
                 black_glow,
