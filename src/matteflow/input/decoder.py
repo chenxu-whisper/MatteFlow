@@ -7,6 +7,7 @@ import numpy as np
 from pathlib import Path
 from typing import List, Tuple, Dict
 
+from ..errors import InputValidationError
 from .formats import IMAGE_EXTENSIONS
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,15 @@ def _read_image_rgb(image_path: Path) -> np.ndarray | None:
 
 class VideoDecoder:
     """视频解码器"""
+
+    def __init__(self, max_frames: int | None = None):
+        self.max_frames = max_frames
+
+    def _raise_frame_limit(self, input_path: Path) -> None:
+        raise InputValidationError(
+            f"Input {input_path} exceeds configured max_input_frames={self.max_frames}. "
+            "Increase max_input_frames or split the input before processing."
+        )
     
     def decode(self, video_path: Path) -> Tuple[List[np.ndarray], Dict]:
         """
@@ -55,6 +65,9 @@ class VideoDecoder:
             ret, frame = cap.read()
             if not ret:
                 break
+            if self.max_frames is not None and self.max_frames > 0 and len(frames) >= self.max_frames:
+                cap.release()
+                self._raise_frame_limit(video_path)
             # BGR -> RGB
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             frames.append(frame_rgb)
@@ -86,6 +99,15 @@ class SequenceDecoder:
     """序列帧解码器"""
     
     SUPPORTED_EXTS = IMAGE_EXTENSIONS
+
+    def __init__(self, max_frames: int | None = None):
+        self.max_frames = max_frames
+
+    def _raise_frame_limit(self, input_path: Path) -> None:
+        raise InputValidationError(
+            f"Input {input_path} exceeds configured max_input_frames={self.max_frames}. "
+            "Increase max_input_frames or split the input before processing."
+        )
     
     def decode(self, dir_path: Path) -> Tuple[List[np.ndarray], Dict]:
         """
@@ -115,12 +137,16 @@ class SequenceDecoder:
             raise ValueError(f"No supported images found in {dir_path}")
         
         frames = []
+        loaded_files = []
         for img_path in image_files:
             img = _read_image_rgb(img_path)
             if img is None:
                 logger.info("Skipping unreadable sequence frame: path=%s format=%s", img_path, img_path.suffix.lower())
                 continue
+            if self.max_frames is not None and self.max_frames > 0 and len(frames) >= self.max_frames:
+                self._raise_frame_limit(dir_path)
             frames.append(img)
+            loaded_files.append(img_path)
         
         if not frames:
             logger.info("Failed to load any sequence frames: path=%s discovered=%s", dir_path, len(image_files))
@@ -133,8 +159,8 @@ class SequenceDecoder:
             len(frames),
             width,
             height,
-            image_files[0].name,
-            image_files[-1].name,
+            loaded_files[0].name,
+            loaded_files[-1].name,
         )
         
         meta = {
@@ -144,7 +170,7 @@ class SequenceDecoder:
             "fps": 30.0,  # 序列帧默认 30fps
             "total_frames": len(frames),
             "actual_frames": len(frames),
-            "source_files": [str(f.name) for f in image_files],
+            "source_files": [str(f.name) for f in loaded_files],
         }
         
         return frames, meta

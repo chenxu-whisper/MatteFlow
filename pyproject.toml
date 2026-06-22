@@ -92,6 +92,9 @@ norecursedirs = [
     "temp",
     "tmp",
 ]
+filterwarnings = [
+    'ignore:`torch\.jit\.script` is deprecated.*:DeprecationWarning:torch\.jit\._script',
+]
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu128" }]

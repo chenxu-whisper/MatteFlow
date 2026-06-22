@@ -150,6 +150,7 @@ class MattingConfig:
     
     # ==================== 性能参数 ====================
     max_resolution: Optional[int] = None  # 最大处理分辨率
+    max_input_frames: Optional[int] = 1800  # 最大输入帧数，None 表示不限制
     batch_size: int = 1                   # 批处理大小
     num_workers: int = 4                  # 并行 worker 数
     gvm_max_internal_size: int = 768      # GVM 默认内部推理尺寸上限

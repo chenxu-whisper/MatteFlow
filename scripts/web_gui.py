@@ -1344,23 +1344,24 @@ def _create_preview_video(output_dir, preview_path, preview_quality_mode="fast")
             return
 
     frame_count = 0
-    for frame_path in frames:
-        rgba = _normalize_preview_frame(_load_preview_output_frame(frame_path))
+    try:
+        for frame_path in frames:
+            rgba = _normalize_preview_frame(_load_preview_output_frame(frame_path))
 
-        # 处理 RGBA 或 RGB
-        if rgba.shape[2] == 4:
-            alpha = rgba[:, :, 3:4].astype(np.float32) / 255.0
-            rgb = rgba[:, :, :3]
-        else:
-            alpha = np.ones((h, w, 1), dtype=np.float32)
-            rgb = rgba
+            # 处理 RGBA 或 RGB
+            if rgba.shape[2] == 4:
+                alpha = rgba[:, :, 3:4].astype(np.float32) / 255.0
+                rgb = rgba[:, :, :3]
+            else:
+                alpha = np.ones((h, w, 1), dtype=np.float32)
+                rgb = rgba
 
-        # 合成到棋盘格背景
-        composed = (rgb * alpha + bg * (1 - alpha)).astype(np.uint8)
-        writer.append_data(composed)
-        frame_count += 1
-
-    writer.close()
+            # 合成到棋盘格背景
+            composed = (rgb * alpha + bg * (1 - alpha)).astype(np.uint8)
+            writer.append_data(composed)
+            frame_count += 1
+    finally:
+        writer.close()
     logger.info("Created preview video: %s (%s frames)", preview_path, frame_count)
 
 
@@ -1403,20 +1404,21 @@ def _create_preview_video_cv2(output_dir, preview_path, preview_quality_mode="fa
             color = 180 if ((y // grid_size) + (x // grid_size)) % 2 == 0 else 120
             bg[y:y+grid_size, x:x+grid_size] = color
 
-    for frame_path in frames:
-        rgba = _normalize_preview_frame(_load_preview_output_frame(frame_path))
-        if rgba.shape[2] == 4:
-            alpha = rgba[:, :, 3:4].astype(np.float32) / 255.0
-            rgb = rgba[:, :, :3]
-        else:
-            alpha = np.ones((h, w, 1), dtype=np.float32)
-            rgb = rgba
+    try:
+        for frame_path in frames:
+            rgba = _normalize_preview_frame(_load_preview_output_frame(frame_path))
+            if rgba.shape[2] == 4:
+                alpha = rgba[:, :, 3:4].astype(np.float32) / 255.0
+                rgb = rgba[:, :, :3]
+            else:
+                alpha = np.ones((h, w, 1), dtype=np.float32)
+                rgb = rgba
 
-        composed = (rgb * alpha + bg * (1 - alpha)).astype(np.uint8)
-        composed_bgr = cv2.cvtColor(composed, cv2.COLOR_RGB2BGR)
-        writer.write(composed_bgr)
-
-    writer.release()
+            composed = (rgb * alpha + bg * (1 - alpha)).astype(np.uint8)
+            composed_bgr = cv2.cvtColor(composed, cv2.COLOR_RGB2BGR)
+            writer.write(composed_bgr)
+    finally:
+        writer.release()
     logger.info("Created preview video with cv2 fallback: %s", preview_path)
 
 

@@ -8,7 +8,7 @@ from typing import Union, Optional
 import numpy as np
 
 from .config import MattingConfig, QualityMode, BackgroundMode
-from .errors import JobCancelledError, ProgressCallbackError
+from .errors import InputValidationError, JobCancelledError, ProgressCallbackError
 from .input.decoder import ImageDecoder, SequenceDecoder, VideoDecoder
 from .input.formats import InputKind, detect_input_kind
 from .analysis.background_analyzer import BackgroundAnalyzer
@@ -125,6 +125,7 @@ class MattingPipeline:
         
         if total_frames == 0:
             raise ValueError(f"No frames found in {input_path}")
+        self._validate_frame_limit(total_frames, input_path)
         
         logger.info(
             "Loaded %s frames, resolution=%sx%s",
@@ -279,18 +280,30 @@ class MattingPipeline:
     def _check_cancelled(cancel_check) -> None:
         if cancel_check is not None and cancel_check():
             raise JobCancelledError("Processing cancelled by user")
+
+    def _validate_frame_limit(self, total_frames: int, input_path: Path) -> None:
+        max_input_frames = getattr(self.config, "max_input_frames", None)
+        if max_input_frames is None or max_input_frames <= 0:
+            return
+        if total_frames > max_input_frames:
+            raise InputValidationError(
+                f"Input {input_path} has {total_frames} frames, "
+                f"which exceeds configured max_input_frames={max_input_frames}. "
+                "Increase max_input_frames or split the input before processing."
+            )
     
     def _decode_input(self, input_path: Path):
         """解码输入"""
         input_kind = detect_input_kind(input_path)
+        max_input_frames = getattr(self.config, "max_input_frames", None)
         if input_kind == InputKind.VIDEO:
-            decoder = VideoDecoder()
+            decoder = VideoDecoder(max_frames=max_input_frames)
             return decoder.decode(input_path)
         if input_kind == InputKind.IMAGE:
             decoder = ImageDecoder()
             return decoder.decode(input_path)
         if input_kind == InputKind.SEQUENCE:
-            decoder = SequenceDecoder()
+            decoder = SequenceDecoder(max_frames=max_input_frames)
             return decoder.decode(input_path)
         raise FileNotFoundError(f"Input not found: {input_path}")
     

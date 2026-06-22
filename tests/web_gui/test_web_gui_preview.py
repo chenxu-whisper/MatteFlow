@@ -1,7 +1,9 @@
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from PIL import Image
 
 
@@ -87,3 +89,67 @@ def test_find_transparent_png_download_returns_none_without_processed_png(tmp_pa
     Image.fromarray(np.zeros((2, 2), dtype=np.uint8), mode="L").save(output_dir / "Matte" / "matte_000000.png")
 
     assert web_gui._find_transparent_png_download(output_dir) is None
+
+
+def test_create_preview_video_closes_imageio_writer_when_frame_write_fails(
+    monkeypatch, tmp_path
+):
+    output_dir = tmp_path / "out"
+    processed_dir = output_dir / "Processed"
+    processed_dir.mkdir(parents=True)
+    Image.fromarray(np.zeros((2, 2, 4), dtype=np.uint8), mode="RGBA").save(
+        processed_dir / "processed_000000.png"
+    )
+    Image.fromarray(np.zeros((2, 2, 4), dtype=np.uint8), mode="RGBA").save(
+        processed_dir / "processed_000001.png"
+    )
+    closed = {"value": False}
+
+    class FailingWriter:
+        def append_data(self, frame):
+            del frame
+            raise RuntimeError("write failed")
+
+        def close(self):
+            closed["value"] = True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "imageio",
+        SimpleNamespace(get_writer=lambda *args, **kwargs: FailingWriter()),
+    )
+
+    with pytest.raises(RuntimeError, match="write failed"):
+        web_gui._create_preview_video(output_dir, tmp_path / "preview.mp4")
+
+    assert closed["value"] is True
+
+
+def test_create_preview_video_cv2_releases_writer_when_frame_write_fails(
+    monkeypatch, tmp_path
+):
+    output_dir = tmp_path / "out"
+    processed_dir = output_dir / "Processed"
+    processed_dir.mkdir(parents=True)
+    Image.fromarray(np.zeros((2, 2, 4), dtype=np.uint8), mode="RGBA").save(
+        processed_dir / "processed_000000.png"
+    )
+    released = {"value": False}
+
+    class FailingVideoWriter:
+        def isOpened(self):
+            return True
+
+        def write(self, frame):
+            del frame
+            raise RuntimeError("cv2 write failed")
+
+        def release(self):
+            released["value"] = True
+
+    monkeypatch.setattr(web_gui.cv2, "VideoWriter", lambda *args, **kwargs: FailingVideoWriter())
+
+    with pytest.raises(RuntimeError, match="cv2 write failed"):
+        web_gui._create_preview_video_cv2(output_dir, tmp_path / "preview.mp4")
+
+    assert released["value"] is True

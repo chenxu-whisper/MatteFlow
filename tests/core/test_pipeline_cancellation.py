@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -8,7 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from matteflow.config import BackgroundMode, MattingConfig, QualityMode
-from matteflow.errors import JobCancelledError, ProgressCallbackError
+from matteflow.errors import InputValidationError, JobCancelledError, ProgressCallbackError
 from matteflow.matte.matanyone2_matte import MatAnyone2Matte
 from matteflow import pipeline as pipeline_module
 from matteflow.pipeline import MattingPipeline
@@ -200,6 +200,31 @@ def test_pipeline_rejects_alpha_frame_count_mismatch(monkeypatch, tmp_path):
     )
 
     with pytest.raises(RuntimeError, match="Alpha count mismatch after matte"):
+        pipeline.process(tmp_path / "input.png", tmp_path / "out")
+
+
+def test_pipeline_rejects_inputs_over_configured_frame_limit_before_analyze(monkeypatch, tmp_path):
+    config = MattingConfig(max_input_frames=1)
+    pipeline = MattingPipeline(config)
+    frames = [
+        np.zeros((2, 2, 3), dtype=np.uint8),
+        np.ones((2, 2, 3), dtype=np.uint8),
+    ]
+
+    monkeypatch.setattr(
+        pipeline,
+        "_decode_input",
+        lambda input_path: (frames, {"width": 2, "height": 2, "fps": 1.0}),
+    )
+    monkeypatch.setattr(
+        pipeline.analyzer,
+        "analyze",
+        lambda decoded_frames: (_ for _ in ()).throw(
+            AssertionError("analyze should not run after frame limit rejection")
+        ),
+    )
+
+    with pytest.raises(InputValidationError, match="exceeds configured max_input_frames"):
         pipeline.process(tmp_path / "input.png", tmp_path / "out")
 
 
