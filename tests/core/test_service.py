@@ -6,11 +6,10 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from matteflow.config import BackgroundMode, QualityMode
-from matteflow.errors import ProcessingError
-from matteflow.diagnostics import DiagnosticCode, from_exception
-from matteflow.service import MatteFlowService, ProcessJobParams, ProcessResult
-
+from matteflow.config import BackgroundMode, QualityMode  # noqa: E402
+from matteflow.diagnostics import DiagnosticCode, from_exception  # noqa: E402
+from matteflow.errors import ProcessingError  # noqa: E402
+from matteflow.service import MatteFlowService, ProcessJobParams, ProcessResult  # noqa: E402
 
 
 def test_process_job_params_freezes_mutable_config_overrides(tmp_path):
@@ -44,6 +43,7 @@ def test_service_passes_snapshot_to_pipeline(tmp_path):
                 "frame_count": 3,
                 "processing_time": 1.25,
                 "timings": {"decode": 0.1},
+                "processing_report_path": str(output_dir / "processing_report.json"),
             }
 
     service = MatteFlowService(pipeline_factory=FakePipeline)
@@ -71,6 +71,7 @@ def test_service_passes_snapshot_to_pipeline(tmp_path):
     assert result.success is True
     assert result.frame_count == 3
     assert result.background_mode == "green_screen"
+    assert result.processing_report_path == tmp_path / "out" / "processing_report.json"
 
 
 def test_service_wraps_pipeline_errors(tmp_path):

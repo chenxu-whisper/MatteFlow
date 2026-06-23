@@ -10,7 +10,7 @@ from typing import Any, Callable, Mapping, Optional
 
 from .config import BackgroundMode, MattingConfig, QualityMode
 from .diagnostics import from_exception
-from .errors import JobCancelledError, MatteFlowError, ProcessingError
+from .errors import MatteFlowError, ProcessingError
 
 ProgressCallback = Callable[[int, int, str], None]
 PipelineFactory = Callable[[MattingConfig], Any]
@@ -80,6 +80,7 @@ class ProcessResult:
     frame_count: int = 0
     processing_time: float = 0.0
     timings: Mapping[str, float] = field(default_factory=dict)
+    processing_report_path: Optional[Path] = None
     error_message: Optional[str] = None
 
 
@@ -140,6 +141,7 @@ class MatteFlowService:
         processing_time = raw_result.get("processing_time")
         if processing_time is None:
             processing_time = raw_result.get("elapsed_time", 0.0)
+        processing_report_path = raw_result.get("processing_report_path")
 
         return ProcessResult(
             success=True,
@@ -149,6 +151,7 @@ class MatteFlowService:
             frame_count=int(frame_count),
             processing_time=float(processing_time),
             timings=MappingProxyType(copy.deepcopy(dict(timings))),
+            processing_report_path=Path(processing_report_path) if processing_report_path else None,
         )
 
     @staticmethod
