@@ -13,6 +13,7 @@ from .input.decoder import ImageDecoder, SequenceDecoder, VideoDecoder
 from .input.formats import InputKind, detect_input_kind
 from .analysis.background_analyzer import BackgroundAnalyzer
 from .analysis.alpha_quality import AlphaQualityAnalyzer
+from .analysis.region_ownership import RegionOwnershipAnalyzer
 from .matte.matte_fusion import MatteFusion
 from .refine.edge_refiner import EdgeRefiner
 from .refine.color_decontaminate import ColorDecontaminate
@@ -31,6 +32,7 @@ class MattingPipeline:
         self.config = config or MattingConfig()
         self.analyzer = BackgroundAnalyzer()
         self.quality_analyzer = AlphaQualityAnalyzer()
+        self.region_analyzer = RegionOwnershipAnalyzer()
         self.fusion = MatteFusion()
         self.refiner = EdgeRefiner(self.config)
         self.decontaminate = ColorDecontaminate(self.config)
@@ -176,7 +178,13 @@ class MattingPipeline:
             self._check_cancelled(cancel_check)
             stage_start = time.time()
             alphas_before_refine = [alpha.copy() for alpha in alphas]
-            alphas = self.refiner.refine(frames, alphas)
+            region_context = self._build_region_context(frames, alphas)
+            alphas = self._call_with_optional_context(
+                self.refiner.refine,
+                frames,
+                alphas,
+                context=region_context,
+            )
             self._assert_frame_alpha_alignment("refine", frames, alphas)
             self._log_alpha_stage_delta("refine", alphas_before_refine, alphas)
             timings["refine"] = time.time() - stage_start
@@ -194,7 +202,13 @@ class MattingPipeline:
             despeckle_context = {
                 "active_ai_model": getattr(getattr(self, "hybrid_matte", None), "last_active_ai_model", None),
             }
-            alphas = self.despeckle.process(alphas, frames=frames, context=despeckle_context)
+            despeckle_context.update(self._build_region_context(frames, alphas))
+            alphas = self._call_with_optional_context(
+                self.despeckle.process,
+                alphas,
+                frames=frames,
+                context=despeckle_context,
+            )
             self._assert_frame_alpha_alignment("despeckle", frames, alphas)
             self._log_alpha_stage_delta("despeckle", alphas_before_despeckle, alphas)
             timings["despeckle"] = time.time() - stage_start
@@ -209,11 +223,14 @@ class MattingPipeline:
             alphas_before_effect_repair = [alpha.copy() for alpha in alphas]
             repair_bg_mode = self._effective_decontamination_mode(bg_mode)
             active_model = getattr(getattr(self, "hybrid_matte", None), "last_active_ai_model", None)
-            alphas = self.effect_prop_repair.process(
+            repair_context = self._build_region_context(frames, alphas)
+            alphas = self._call_with_optional_context(
+                self.effect_prop_repair.process,
                 frames,
                 alphas,
                 repair_bg_mode,
                 active_model=active_model,
+                context=repair_context,
             )
             self._assert_frame_alpha_alignment("effect_prop_repair", frames, alphas)
             self._log_alpha_stage_delta("effect_prop_repair", alphas_before_effect_repair, alphas)
@@ -250,7 +267,14 @@ class MattingPipeline:
         self._check_cancelled(cancel_check)
         stage_start = time.time()
         decontaminate_bg_mode = self._effective_decontamination_mode(bg_mode)
-        frames = self.decontaminate.process(frames, alphas, decontaminate_bg_mode)
+        decontaminate_context = self._build_region_context(frames, alphas)
+        frames = self._call_with_optional_context(
+            self.decontaminate.process,
+            frames,
+            alphas,
+            decontaminate_bg_mode,
+            context=decontaminate_context,
+        )
         self._assert_sequence_length("decontaminate", total_frames, len(frames), "Frame")
         self._assert_frame_alpha_alignment("decontaminate", frames, alphas)
         timings["decontaminate"] = time.time() - stage_start
@@ -343,6 +367,22 @@ class MattingPipeline:
             return self.stabilizer.stabilize(alphas, frames=frames)
         return self.stabilizer.stabilize(alphas)
 
+    @staticmethod
+    def _call_with_optional_context(callable_obj, *args, context=None, **kwargs):
+        """Pass shared region context only to stage implementations that accept it."""
+        params = inspect.signature(callable_obj).parameters
+        if context is not None and "context" in params:
+            kwargs["context"] = context
+        return callable_obj(*args, **kwargs)
+
+    def _build_region_context(self, frames, alphas, base_alphas=None) -> dict:
+        """Build shared per-frame region ownership for downstream repair stages."""
+        ownerships = []
+        for index, (frame, alpha) in enumerate(zip(frames, alphas)):
+            base_alpha = base_alphas[index] if base_alphas is not None and index < len(base_alphas) else None
+            ownerships.append(self.region_analyzer.analyze(frame, alpha, base_alpha))
+        return {"region_ownership": ownerships}
+
     def _write_quality_debug_outputs(self, frames, alphas, output_dir: Path):
         """Write alpha quality overlays and a compact metric report when debug output is enabled."""
         if not getattr(self.config, "output_debug", False):
@@ -355,6 +395,8 @@ class MattingPipeline:
         for i, (frame, alpha) in enumerate(zip(frames, alphas)):
             overlay = self.quality_analyzer.build_debug_overlay(frame, alpha)
             self.encoder.encode_image(overlay, debug_dir / f"quality_overlay_{i:06d}.png")
+            region_overlay = self.region_analyzer.build_debug_overlay(frame, alpha)
+            self.encoder.encode_image(region_overlay, debug_dir / f"region_ownership_{i:06d}.png")
 
         report_path = debug_dir / "quality_report.txt"
         report_path.write_text(

@@ -3,6 +3,7 @@
 import numpy as np
 import cv2
 
+from ..analysis.region_ownership import RegionOwnershipAnalyzer
 from ..config import MattingConfig
 
 
@@ -11,8 +12,9 @@ class EdgeRefiner:
     
     def __init__(self, config: MattingConfig):
         self.config = config
+        self._region_analyzer = RegionOwnershipAnalyzer()
     
-    def refine(self, frames, alphas):
+    def refine(self, frames, alphas, context=None):
         """
         细化边缘 alpha
         
@@ -24,12 +26,14 @@ class EdgeRefiner:
             细化后的 alpha 列表
         """
         refined = []
-        for frame, alpha in zip(frames, alphas):
-            refined_alpha = self._refine_single(frame, alpha)
+        context = context or {}
+        for index, (frame, alpha) in enumerate(zip(frames, alphas)):
+            ownership = self._ownership_from_context(context, index)
+            refined_alpha = self._refine_single(frame, alpha, ownership=ownership)
             refined.append(refined_alpha)
         return refined
     
-    def _refine_single(self, frame: np.ndarray, alpha: np.ndarray) -> np.ndarray:
+    def _refine_single(self, frame: np.ndarray, alpha: np.ndarray, ownership=None) -> np.ndarray:
         """单帧边缘细化"""
         # 1. 提取边缘区域（trimap: 确定前景/背景/未知）
         trimap = self._generate_trimap(alpha)
@@ -42,7 +46,7 @@ class EdgeRefiner:
         
         # 3. 局部导向滤波细化
         refined = self._local_guided_filter(frame, alpha, unknown_mask)
-        refined = self._restore_warm_luminous_props(frame, alpha, refined)
+        refined = self._restore_warm_luminous_props(frame, alpha, refined, ownership=ownership)
         
         return refined
     
@@ -96,21 +100,18 @@ class EdgeRefiner:
         frame: np.ndarray,
         original: np.ndarray,
         refined: np.ndarray,
+        ownership=None,
     ) -> np.ndarray:
-        frame_f = frame.astype(np.float32, copy=False)
-        red = frame_f[:, :, 0]
-        green = frame_f[:, :, 1]
-        blue = frame_f[:, :, 2]
-        screen_green = (green > red + 30.0) & (green > blue + 20.0) & (green > 90.0)
-        warm_luminous = (
-            (original >= 0.95)
-            & (red > 170.0)
-            & (green > 115.0)
-            & (blue < 175.0)
-            & ((red - blue) > 45.0)
-            & ((green - blue) > 8.0)
-            & (~screen_green)
-        )
-        if not np.any(warm_luminous):
+        if ownership is None:
+            ownership = self._region_analyzer.analyze(frame, original)
+        luminous_prop = ownership.luminous_prop & (original >= 0.95)
+        if not np.any(luminous_prop):
             return refined
-        return np.where(warm_luminous, np.maximum(refined, original), refined).astype(np.float32, copy=False)
+        return np.where(luminous_prop, np.maximum(refined, original), refined).astype(np.float32, copy=False)
+
+    @staticmethod
+    def _ownership_from_context(context: dict, index: int):
+        ownerships = context.get("region_ownership") if context else None
+        if ownerships is None or index >= len(ownerships):
+            return None
+        return ownerships[index]
