@@ -268,6 +268,11 @@ class MattingPipeline:
         stage_start = time.time()
         decontaminate_bg_mode = self._effective_decontamination_mode(bg_mode)
         decontaminate_context = self._build_region_context(frames, alphas)
+        decontaminate_context["active_ai_model"] = getattr(
+            getattr(self, "hybrid_matte", None),
+            "last_active_ai_model",
+            None,
+        )
         frames = self._call_with_optional_context(
             self.decontaminate.process,
             frames,
