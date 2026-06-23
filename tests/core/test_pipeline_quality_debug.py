@@ -21,13 +21,17 @@ def test_pipeline_writes_quality_debug_overlays_and_report(tmp_path):
     report = pipeline._write_quality_debug_outputs(frames, alphas, tmp_path)
 
     overlay_path = tmp_path / "debug" / "quality_overlay_000000.png"
+    region_path = tmp_path / "debug" / "region_ownership_000000.png"
     report_path = tmp_path / "debug" / "quality_report.txt"
     assert overlay_path.exists()
+    assert region_path.exists()
     assert report_path.exists()
     assert "overall_score=" in report_path.read_text(encoding="utf-8")
     assert report.frame_count == 1
     written = cv2.imread(str(overlay_path), cv2.IMREAD_COLOR)
     assert written is not None
+    region_overlay = cv2.imread(str(region_path), cv2.IMREAD_COLOR)
+    assert region_overlay is not None
 
 
 def test_pipeline_skips_quality_debug_outputs_when_disabled(tmp_path):

@@ -3,6 +3,7 @@
 import numpy as np
 import cv2
 
+from ..analysis.region_ownership import RegionOwnershipAnalyzer
 from ..config import MattingConfig
 
 
@@ -11,6 +12,7 @@ class Despeckle:
     
     def __init__(self, config: MattingConfig):
         self.config = config
+        self._region_analyzer = RegionOwnershipAnalyzer()
     
     def process(self, alphas, frames=None, context=None):
         """
@@ -29,11 +31,17 @@ class Despeckle:
         context = context or {}
         for index, alpha in enumerate(alphas):
             frame = frames[index] if frames is not None and index < len(frames) else None
-            cleaned_alpha = self._despeckle_single(alpha, frame=frame, context=context)
+            ownership = self._ownership_from_context(context, index)
+            cleaned_alpha = self._despeckle_single(
+                alpha,
+                frame=frame,
+                context=context,
+                ownership=ownership,
+            )
             cleaned.append(cleaned_alpha)
         return cleaned
     
-    def _despeckle_single(self, alpha: np.ndarray, frame=None, context=None) -> np.ndarray:
+    def _despeckle_single(self, alpha: np.ndarray, frame=None, context=None, ownership=None) -> np.ndarray:
         """单帧去噪点"""
         alpha_f = np.clip(alpha.astype(np.float32, copy=False), 0.0, 1.0)
         alpha_u8 = np.clip(alpha_f * 255.0, 0.0, 255.0).astype(np.uint8)
@@ -42,13 +50,23 @@ class Despeckle:
         radius = self.config.despeckle_radius
         ksize = 2 * radius + 1
         cleaned = cv2.medianBlur(alpha_u8, ksize)
-        cleaned = self._restore_supported_soft_alpha(alpha_u8, cleaned, ksize, frame=frame, context=context or {})
-        cleaned = self._restore_warm_luminous_props(alpha_u8, cleaned, frame=frame)
+        cleaned = self._restore_supported_soft_alpha(
+            alpha_u8,
+            cleaned,
+            ksize,
+            frame=frame,
+            context=context or {},
+            ownership=ownership,
+        )
+        cleaned = self._restore_warm_luminous_props(alpha_u8, cleaned, frame=frame, ownership=ownership)
         
         # 阈值处理去除微小噪点
         threshold = int(self.config.despeckle_threshold * 255)
         if threshold > 0:
             cleaned = np.where(cleaned <= threshold, 0, cleaned).astype(np.uint8)
+            if ownership is not None:
+                protected = ownership.transparent_effect | ownership.luminous_prop
+                cleaned = np.where(protected & (alpha_u8 > 0), np.maximum(cleaned, alpha_u8), cleaned).astype(np.uint8)
         
         return cleaned.astype(np.float32) / 255.0
 
@@ -75,6 +93,7 @@ class Despeckle:
         ksize: int,
         frame=None,
         context=None,
+        ownership=None,
     ) -> np.ndarray:
         """Keep supported soft alpha from being flattened into zero by large median kernels."""
         soft_floor = max(8, int(round(0.03 * 255.0)))
@@ -107,6 +126,12 @@ class Despeckle:
             restored = np.where(protected_mask, original, cleaned)
         else:
             restored = np.where(crushed_soft & support_mask, original, cleaned)
+
+        if frame is not None:
+            if ownership is None:
+                ownership = self._region_analyzer.analyze(frame, original.astype(np.float32) / 255.0)
+            transparent_effect = ownership.transparent_effect
+            restored = np.where(crushed_soft & transparent_effect, original, restored)
         return restored.astype(np.uint8)
 
     def _restore_warm_luminous_props(
@@ -114,24 +139,22 @@ class Despeckle:
         original: np.ndarray,
         cleaned: np.ndarray,
         frame=None,
+        ownership=None,
     ) -> np.ndarray:
         if frame is None:
             return cleaned
 
-        frame_f = frame.astype(np.float32, copy=False)
-        red = frame_f[:, :, 0]
-        green = frame_f[:, :, 1]
-        blue = frame_f[:, :, 2]
-        screen_green = (green > red + 30.0) & (green > blue + 20.0) & (green > 90.0)
-        warm_luminous = (
-            (original >= 242)
-            & (red > 170.0)
-            & (green > 115.0)
-            & (blue < 175.0)
-            & ((red - blue) > 45.0)
-            & ((green - blue) > 8.0)
-            & (~screen_green)
-        )
-        if not np.any(warm_luminous):
+        if ownership is None:
+            ownership = self._region_analyzer.analyze(frame, original.astype(np.float32) / 255.0)
+        luminous_prop = ownership.luminous_prop
+        luminous_prop = luminous_prop & (original > cleaned)
+        if not np.any(luminous_prop):
             return cleaned
-        return np.where(warm_luminous, np.maximum(cleaned, original), cleaned).astype(np.uint8, copy=False)
+        return np.where(luminous_prop, np.maximum(cleaned, original), cleaned).astype(np.uint8, copy=False)
+
+    @staticmethod
+    def _ownership_from_context(context: dict, index: int):
+        ownerships = context.get("region_ownership") if context else None
+        if ownerships is None or index >= len(ownerships):
+            return None
+        return ownerships[index]

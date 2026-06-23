@@ -3,6 +3,7 @@
 import numpy as np
 import cv2
 
+from ..analysis.region_ownership import RegionOwnershipAnalyzer
 from ..config import MattingConfig, BackgroundMode
 
 
@@ -11,12 +12,15 @@ class ColorDecontaminate:
     
     def __init__(self, config: MattingConfig):
         self.config = config
+        self._region_analyzer = RegionOwnershipAnalyzer()
     
-    def process(self, frames, alphas, bg_mode):
+    def process(self, frames, alphas, bg_mode, context=None):
         processed = []
-        for frame, alpha in zip(frames, alphas):
+        context = context or {}
+        for index, (frame, alpha) in enumerate(zip(frames, alphas)):
+            ownership = self._ownership_from_context(context, index)
             if bg_mode == BackgroundMode.GREEN_SCREEN:
-                result = self._remove_green_spill(frame, alpha)
+                result = self._remove_green_spill(frame, alpha, ownership=ownership)
             elif bg_mode == BackgroundMode.BLACK_BACKGROUND:
                 result = self._remove_black_spill(frame, alpha)
             else:
@@ -73,7 +77,7 @@ class ColorDecontaminate:
         recovered = (frame_f - (1.0 - alpha_f)[..., np.newaxis] * screen) / safe_alpha[..., np.newaxis]
         return np.clip(recovered, 0.0, 255.0)
     
-    def _remove_green_spill(self, frame: np.ndarray, alpha: np.ndarray) -> np.ndarray:
+    def _remove_green_spill(self, frame: np.ndarray, alpha: np.ndarray, ownership=None) -> np.ndarray:
         """去除绿溢色 - 保守版：只处理明显绿边，保护白色/浅色区域"""
         result = frame.astype(np.float32)
         r, g, b = result[:, :, 0], result[:, :, 1], result[:, :, 2]
@@ -241,6 +245,10 @@ class ColorDecontaminate:
         # 10. 对黄色发光道具邻域做局部色彩投影。这里不改变 alpha，只把仍然
         # 朝绿幕方向偏移的残留像素投回暖色/中性色方向，保护星星和细杆边缘。
         prop_reach = self._warm_luminous_prop_reach(frame, alpha)
+        if ownership is None:
+            ownership = self._region_analyzer.analyze(frame, alpha)
+        region_prop = ownership.luminous_prop
+        prop_reach = prop_reach | region_prop
         if np.any(prop_reach):
             prop_green_residue = (
                 prop_reach
@@ -259,6 +267,13 @@ class ColorDecontaminate:
         result[:, :, 2] = np.clip(b_corrected, 0, 255)
         
         return result.astype(np.uint8)
+
+    @staticmethod
+    def _ownership_from_context(context: dict, index: int):
+        ownerships = context.get("region_ownership") if context else None
+        if ownerships is None or index >= len(ownerships):
+            return None
+        return ownerships[index]
 
     def _warm_luminous_prop_reach(self, frame: np.ndarray, alpha: np.ndarray) -> np.ndarray:
         frame_f = frame.astype(np.float32, copy=False)
