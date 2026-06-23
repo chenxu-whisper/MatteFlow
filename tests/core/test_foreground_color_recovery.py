@@ -64,6 +64,55 @@ def test_foreground_color_recovery_limits_changes_to_owned_regions():
     assert np.array_equal(recovered[unowned_mask], frame[unowned_mask])
 
 
+def test_foreground_color_recovery_sequence_reuses_stable_screen_color():
+    screen = np.array([0.0, 210.0, 40.0], dtype=np.float32)
+    foreground = np.array([220.0, 130.0, 70.0], dtype=np.float32)
+    alpha_value = 0.50
+    observed = np.round(alpha_value * foreground + (1.0 - alpha_value) * screen).astype(np.uint8)
+
+    first = np.tile(screen.astype(np.uint8), (12, 12, 1))
+    second = np.tile(observed, (12, 12, 1))
+    alpha_first = np.zeros((12, 12), dtype=np.float32)
+    alpha_second = np.full((12, 12), alpha_value, dtype=np.float32)
+    effect_mask = np.zeros((12, 12), dtype=bool)
+    effect_mask[4:8, 4:8] = True
+    first[effect_mask] = observed
+    alpha_first[effect_mask] = alpha_value
+    ownerships = [
+        _blank_ownership(alpha_first.shape, transparent_effect=effect_mask),
+        _blank_ownership(alpha_second.shape, transparent_effect=np.ones_like(effect_mask)),
+    ]
+
+    recovery = ForegroundColorRecovery(MattingConfig())
+    recovered_single = recovery.recover(second, alpha_second, ownership=ownerships[1])
+    recovered_sequence = recovery.recover_sequence(
+        [first, second],
+        [alpha_first, alpha_second],
+        ownerships=ownerships,
+    )
+
+    single_error = np.abs(recovered_single.astype(np.float32) - foreground).mean()
+    sequence_error = np.abs(recovered_sequence[1].astype(np.float32) - foreground).mean()
+    assert sequence_error + 20.0 < single_error
+    assert recovery.last_sequence_diagnostics["screen_rgb"] == [0.0, 210.0, 40.0]
+
+
+def test_foreground_color_recovery_quality_gate_rejects_destructive_low_alpha_unmix():
+    frame = np.full((12, 12, 3), [0, 210, 40], dtype=np.uint8)
+    alpha = np.zeros((12, 12), dtype=np.float32)
+    effect_mask = np.zeros((12, 12), dtype=bool)
+    effect_mask[4:8, 4:8] = True
+    frame[effect_mask] = [8, 170, 35]
+    alpha[effect_mask] = 0.12
+    ownership = _blank_ownership(alpha.shape, transparent_effect=effect_mask)
+
+    recovery = ForegroundColorRecovery(MattingConfig())
+    recovered = recovery.recover(frame, alpha, ownership=ownership)
+
+    assert np.array_equal(recovered[effect_mask], frame[effect_mask])
+    assert recovery.last_diagnostics["rejected_pixels"] >= int(effect_mask.sum())
+
+
 def test_color_decontaminate_runs_foreground_color_recovery_with_shared_ownership():
     frame = np.full((12, 12, 3), [0, 210, 40], dtype=np.uint8)
     alpha = np.zeros((12, 12), dtype=np.float32)
@@ -81,6 +130,31 @@ def test_color_decontaminate_runs_foreground_color_recovery_with_shared_ownershi
     )[0]
 
     assert float(result.astype(np.float32)[prop_mask, 0].mean()) > 155.0
+
+
+def test_color_decontaminate_records_foreground_recovery_diagnostics_in_context():
+    frame = np.full((12, 12, 3), [0, 210, 40], dtype=np.uint8)
+    alpha = np.zeros((12, 12), dtype=np.float32)
+    effect_mask = np.zeros((12, 12), dtype=bool)
+    effect_mask[4:8, 4:8] = True
+    frame[effect_mask] = [35, 190, 55]
+    alpha[effect_mask] = 0.55
+    ownership = _blank_ownership(alpha.shape, transparent_effect=effect_mask)
+    context = {"region_ownership": [ownership]}
+
+    ColorDecontaminate(MattingConfig()).process(
+        [frame],
+        [alpha],
+        BackgroundMode.GREEN_SCREEN,
+        context=context,
+    )
+
+    diagnostics = context["foreground_recovery"]
+    assert diagnostics["frames"] == 1
+    assert diagnostics["attempted_pixels"] >= 0
+    assert diagnostics["accepted_pixels"] >= 0
+    assert diagnostics["rejected_pixels"] >= 0
+    assert diagnostics["screen_rgb"] == [0.0, 210.0, 40.0]
 
 
 def test_color_decontaminate_skips_foreground_color_recovery_for_gvm_context():
