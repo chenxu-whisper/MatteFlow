@@ -66,7 +66,7 @@ class CorridorKeyMatte:
         model_dir = models_root()
         model_dir.mkdir(parents=True, exist_ok=True)
         
-        # 对齐 EZ-CorridorKey 当前使用的官方权重来源与本项目加载路径。
+        # 当前使用的官方权重来源与本项目加载路径。
         url = "https://huggingface.co/nikopueringer/CorridorKey_v1.0/resolve/main/CorridorKey_v1.0.pth"
         model_path = model_dir / "corridorkey.pth"
         
@@ -82,7 +82,7 @@ class CorridorKeyMatte:
             raise RuntimeError(f"CorridorKey download failed: {e}") from e
     
     def generate(self, frame: np.ndarray, background: Optional[np.ndarray] = None) -> np.ndarray:
-        """单帧抠图 — 对齐 EZ-CorridorKey 参数
+        """单帧抠图
         
         Args:
             frame: 输入帧 (H, W, 3), uint8
@@ -95,7 +95,6 @@ class CorridorKeyMatte:
             logger.info("Model unavailable")
             raise ModelLoadError("CorridorKey model is not loaded")
         
-        # 直接使用 EZ-CorridorKey 的 process_frame 方法
         try:
             logger.info("Running CorridorKey process_frame on resolution=%sx%s", frame.shape[1], frame.shape[0])
             # 上游 decoder 已统一输出 RGB，这里不再重复做 BGR->RGB 变换
@@ -153,7 +152,7 @@ class CorridorKeyMatte:
         return np.clip(alpha_array, 0.0, 1.0).astype(np.float32, copy=False)
     
     def _apply_postprocess(self, alpha: np.ndarray) -> np.ndarray:
-        """应用 EZ-CorridorKey 风格后处理"""
+        """风格后处理"""
         
         # 1. Shrink/Grow
         if self.config.shrink_grow != 0:

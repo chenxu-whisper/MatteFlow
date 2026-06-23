@@ -43,6 +43,7 @@ class Despeckle:
         ksize = 2 * radius + 1
         cleaned = cv2.medianBlur(alpha_u8, ksize)
         cleaned = self._restore_supported_soft_alpha(alpha_u8, cleaned, ksize, frame=frame, context=context or {})
+        cleaned = self._restore_warm_luminous_props(alpha_u8, cleaned, frame=frame)
         
         # 阈值处理去除微小噪点
         threshold = int(self.config.despeckle_threshold * 255)
@@ -107,3 +108,30 @@ class Despeckle:
         else:
             restored = np.where(crushed_soft & support_mask, original, cleaned)
         return restored.astype(np.uint8)
+
+    def _restore_warm_luminous_props(
+        self,
+        original: np.ndarray,
+        cleaned: np.ndarray,
+        frame=None,
+    ) -> np.ndarray:
+        if frame is None:
+            return cleaned
+
+        frame_f = frame.astype(np.float32, copy=False)
+        red = frame_f[:, :, 0]
+        green = frame_f[:, :, 1]
+        blue = frame_f[:, :, 2]
+        screen_green = (green > red + 30.0) & (green > blue + 20.0) & (green > 90.0)
+        warm_luminous = (
+            (original >= 242)
+            & (red > 170.0)
+            & (green > 115.0)
+            & (blue < 175.0)
+            & ((red - blue) > 45.0)
+            & ((green - blue) > 8.0)
+            & (~screen_green)
+        )
+        if not np.any(warm_luminous):
+            return cleaned
+        return np.where(warm_luminous, np.maximum(cleaned, original), cleaned).astype(np.uint8, copy=False)

@@ -1,6 +1,6 @@
 # Vendored From
 
-- Source repository: `EZ-CorridorKey`
+- Source repository: `CorridorKey`
 - Source path: `CorridorKeyModule/`
 - Vendored into: `MatteFlow/src/matteflow/vendor/corridorkey_module/`
 - Reason: remove runtime dependency on external repository paths

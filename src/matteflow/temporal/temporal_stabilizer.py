@@ -1,5 +1,6 @@
 """时序稳定模块"""
 
+import cv2
 import numpy as np
 from typing import List
 
@@ -12,7 +13,7 @@ class TemporalStabilizer:
     def __init__(self, config: MattingConfig):
         self.config = config
     
-    def stabilize(self, alphas: List[np.ndarray]) -> List[np.ndarray]:
+    def stabilize(self, alphas: List[np.ndarray], frames: List[np.ndarray] | None = None) -> List[np.ndarray]:
         """
         时序稳定 Alpha
         
@@ -30,7 +31,7 @@ class TemporalStabilizer:
         elif self.config.quality_mode == QualityMode.STANDARD:
             return self._adaptive_smooth(alphas)
         else:  # HIGH
-            return self._optical_flow_smooth(alphas)
+            return self._optical_flow_smooth(alphas, frames=frames)
 
     def _transparency_mask(self, alpha: np.ndarray) -> np.ndarray:
         low = float(getattr(self.config, "transparency_temporal_low", 0.03))
@@ -110,6 +111,89 @@ class TemporalStabilizer:
         
         return final
     
-    def _optical_flow_smooth(self, alphas: List[np.ndarray]) -> List[np.ndarray]:
-        """高质量光流辅助平滑（MVP 用双向平滑代替）"""
-        return self._adaptive_smooth(alphas)
+    def _optical_flow_smooth(
+        self,
+        alphas: List[np.ndarray],
+        frames: List[np.ndarray] | None = None,
+    ) -> List[np.ndarray]:
+        """高质量光流辅助平滑。"""
+        if frames is None or len(frames) != len(alphas) or len(alphas) <= 1:
+            return self._adaptive_smooth(alphas)
+
+        strength = float(np.clip(getattr(self.config, "temporal_strength", 0.5), 0.0, 1.0))
+        smoothed = [np.clip(alphas[0].astype(np.float32, copy=True), 0.0, 1.0)]
+        for prev_frame, curr_frame, curr_alpha in zip(frames, frames[1:], alphas[1:]):
+            prev_alpha = smoothed[-1]
+            curr_alpha_f = np.clip(curr_alpha.astype(np.float32, copy=False), 0.0, 1.0)
+            warped_prev = self._warp_alpha_to_current_frame(prev_frame, curr_frame, prev_alpha)
+            motion_supported = warped_prev > curr_alpha_f
+            blended = curr_alpha_f * (1.0 - strength) + warped_prev * strength
+            result = np.where(motion_supported, np.maximum(curr_alpha_f, blended), curr_alpha_f)
+            smoothed.append(np.clip(result, 0.0, 1.0))
+        return smoothed
+
+    def _warp_alpha_to_current_frame(
+        self,
+        prev_frame: np.ndarray,
+        curr_frame: np.ndarray,
+        prev_alpha: np.ndarray,
+    ) -> np.ndarray:
+        prev_gray = self._to_gray_float(prev_frame)
+        curr_gray = self._to_gray_float(curr_frame)
+        global_warped = self._warp_alpha_by_global_translation(prev_gray, curr_gray, prev_alpha)
+        if float(global_warped.max()) > 0.05:
+            return np.clip(global_warped, 0.0, 1.0)
+
+        flow = cv2.calcOpticalFlowFarneback(
+            prev_gray,
+            curr_gray,
+            None,
+            pyr_scale=0.5,
+            levels=3,
+            winsize=15,
+            iterations=3,
+            poly_n=5,
+            poly_sigma=1.2,
+            flags=0,
+        )
+        h, w = prev_alpha.shape
+        grid_x, grid_y = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
+        map_x = grid_x - flow[:, :, 0]
+        map_y = grid_y - flow[:, :, 1]
+        warped = cv2.remap(
+            prev_alpha.astype(np.float32, copy=False),
+            map_x,
+            map_y,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
+        )
+        if float(warped.max()) <= 0.05:
+            warped = self._warp_alpha_by_global_translation(prev_gray, curr_gray, prev_alpha)
+        return np.clip(warped, 0.0, 1.0)
+
+    @staticmethod
+    def _warp_alpha_by_global_translation(
+        prev_gray: np.ndarray,
+        curr_gray: np.ndarray,
+        prev_alpha: np.ndarray,
+    ) -> np.ndarray:
+        shift, _ = cv2.phaseCorrelate(prev_gray, curr_gray)
+        matrix = np.array([[1.0, 0.0, shift[0]], [0.0, 1.0, shift[1]]], dtype=np.float32)
+        h, w = prev_alpha.shape
+        return cv2.warpAffine(
+            prev_alpha.astype(np.float32, copy=False),
+            matrix,
+            (w, h),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
+        )
+
+    @staticmethod
+    def _to_gray_float(frame: np.ndarray) -> np.ndarray:
+        if frame.ndim == 2:
+            gray = frame
+        else:
+            gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        return gray.astype(np.float32, copy=False) / 255.0

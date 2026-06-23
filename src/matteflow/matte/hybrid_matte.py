@@ -339,7 +339,7 @@ class HybridMatte:
         cancel_check=None,
     ) -> List[np.ndarray]:
         if not getattr(self.config, "use_ai", False):
-            raise RuntimeError("Unable to determine background mode automatically. Please choose green screen or black background.")
+            return self._traditional_unknown_background_matte(frames, progress_callback, cancel_check)
 
         ai_name, ai_engine, auto_selected = self._select_sequence_ai_engine()
         if ai_engine is None:
@@ -349,6 +349,57 @@ class HybridMatte:
         suffix = " (auto)" if auto_selected else ""
         logger.info("Using %s for unknown background fallback%s", ai_name.upper(), suffix)
         return self._generate_with_engine(ai_engine, frames, progress_callback, cancel_check)
+
+    def _traditional_unknown_background_matte(
+        self,
+        frames: List[np.ndarray],
+        progress_callback=None,
+        cancel_check=None,
+    ) -> List[np.ndarray]:
+        green_alphas = []
+        black_alphas = []
+        for i, frame in enumerate(frames):
+            self._check_cancelled(cancel_check)
+            green_alphas.append(self.green_matte.generate(frame))
+            black_alphas.append(self.black_matte.generate(frame))
+            if progress_callback and i % max(1, len(frames) // 20) == 0:
+                progress_callback(i, len(frames))
+
+        green_score = self._score_traditional_unknown_candidate(green_alphas)
+        black_score = self._score_traditional_unknown_candidate(black_alphas)
+        if green_score >= black_score:
+            self.last_active_ai_model = "traditional_green_fallback"
+            logger.info(
+                "Unknown background fallback selected green screen: green_score=%.4f black_score=%.4f",
+                green_score,
+                black_score,
+            )
+            return green_alphas
+
+        self.last_active_ai_model = "traditional_black_fallback"
+        logger.info(
+            "Unknown background fallback selected black background: green_score=%.4f black_score=%.4f",
+            green_score,
+            black_score,
+        )
+        return black_alphas
+
+    @staticmethod
+    def _score_traditional_unknown_candidate(alphas: List[np.ndarray]) -> float:
+        if not alphas:
+            return -1.0
+
+        scores = []
+        for alpha in alphas:
+            alpha_f = np.clip(alpha.astype(np.float32, copy=False), 0.0, 1.0)
+            nonzero_ratio = float((alpha_f > 0.01).mean())
+            solid_ratio = float((alpha_f > 0.95).mean())
+            soft_ratio = float(((alpha_f > 0.05) & (alpha_f < 0.95)).mean())
+            mean_alpha = float(alpha_f.mean())
+            full_frame_residue_penalty = 0.45 if nonzero_ratio > 0.98 and solid_ratio < 0.10 else 0.0
+            score = solid_ratio * 1.20 + min(mean_alpha, 0.65) * 0.35 - soft_ratio * 0.30 - full_frame_residue_penalty
+            scores.append(score)
+        return float(np.mean(scores))
 
     def generate_sequence(
         self,
@@ -605,18 +656,24 @@ class HybridMatte:
             effect_alpha = effect_alpha * (1.0 - 0.85 * subject_gate)
             effect_alpha = np.maximum(
                 effect_alpha,
-                self._green_screen_luminous_effect_reconstruction_layer(base_alpha, frame) * preserve,
+                self._green_screen_luminous_effect_reconstruction_layer(base_alpha, frame)
+                * min(1.0, preserve + 1e-4),
+            )
+            effect_alpha = np.maximum(
+                effect_alpha,
+                self._green_screen_warm_luminous_prop_layer(base_alpha, frame),
             )
             if composer is not None:
                 background_evidence = self._green_screen_background_evidence_layer(base_alpha, frame)
+                hard_background_veto = self._green_screen_document_background_evidence_layer(base_alpha, frame) >= 0.95
                 background_veto = background_evidence >= 0.50
                 solid_alpha = np.where(
-                    background_veto & (subject_confidence < 0.85),
+                    hard_background_veto | (background_veto & (subject_confidence < 0.85)),
                     0.0,
                     solid_alpha,
                 ).astype(np.float32, copy=False)
                 effect_alpha = np.where(
-                    background_veto & (effect_alpha < 0.85),
+                    hard_background_veto | (background_veto & (effect_alpha < 0.85)),
                     0.0,
                     effect_alpha,
                 ).astype(np.float32, copy=False)
@@ -811,6 +868,85 @@ class HybridMatte:
         )
         return far_blue_background.astype(np.float32, copy=False)
 
+    def _green_screen_document_background_evidence_layer(
+        self,
+        base_alpha: np.ndarray,
+        frame: np.ndarray | None,
+    ) -> np.ndarray:
+        if frame is None:
+            return np.zeros_like(base_alpha, dtype=np.float32)
+
+        frame_f = frame.astype(np.float32, copy=False)
+        red = frame_f[:, :, 0]
+        green = frame_f[:, :, 1]
+        blue = frame_f[:, :, 2]
+        brightness = (red + green + blue) / 3.0
+        chroma = np.maximum.reduce([red, green, blue]) - np.minimum.reduce([red, green, blue])
+        screen_green = (green > red + 30.0) & (green > blue + 20.0) & (green > 90.0)
+        purple_subject = (red > 120.0) & (blue > 130.0) & (green < 180.0)
+        return self._green_screen_document_background_evidence(
+            base_alpha,
+            red,
+            green,
+            blue,
+            brightness,
+            chroma,
+            purple_subject,
+            screen_green,
+        )
+
+    def _green_screen_document_background_evidence(
+        self,
+        base_alpha: np.ndarray,
+        red: np.ndarray,
+        green: np.ndarray,
+        blue: np.ndarray,
+        brightness: np.ndarray,
+        chroma: np.ndarray,
+        purple_subject: np.ndarray,
+        screen_green: np.ndarray,
+    ) -> np.ndarray:
+        """Veto large document/UI-like regions that a green key treats as foreground."""
+        page_like = (
+            (base_alpha >= 0.55)
+            & (brightness > 172.0)
+            & (chroma < 90.0)
+            & (~purple_subject)
+            & (~screen_green)
+        )
+        if not np.any(page_like):
+            return np.zeros_like(base_alpha, dtype=np.float32)
+
+        candidate_uint = cv2.morphologyEx(
+            page_like.astype(np.uint8, copy=False),
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_RECT, (23, 23)),
+            iterations=1,
+        )
+        component_count, labels, stats, _ = cv2.connectedComponentsWithStats(candidate_uint, connectivity=8)
+        if component_count <= 1:
+            return np.zeros_like(base_alpha, dtype=np.float32)
+
+        height, width = base_alpha.shape
+        frame_area = float(height * width)
+        evidence = np.zeros_like(base_alpha, dtype=np.float32)
+        for label in range(1, component_count):
+            area = int(stats[label, cv2.CC_STAT_AREA])
+            x, y, w, h = stats[label, :4]
+            if area < 0.006 * frame_area:
+                continue
+            touches_frame_or_top = x <= 8 or y <= 8 or x + w >= width - 8 or y < height * 0.58
+            rectangular_extent = area / max(float(w * h), 1.0)
+            if not touches_frame_or_top or rectangular_extent < 0.18:
+                continue
+
+            component = labels == label
+            subject_overlap = float((component & purple_subject).sum()) / max(float(component.sum()), 1.0)
+            if subject_overlap > 0.10:
+                continue
+            evidence[component] = 1.0
+        return evidence
+
     def _green_screen_luminous_effect_reconstruction_layer(
         self,
         base_alpha: np.ndarray,
@@ -868,6 +1004,45 @@ class HybridMatte:
             screen_green,
         )
         return np.clip(np.maximum.reduce([core_alpha, halo_alpha, cyan_halo_alpha]), 0.0, 1.0).astype(np.float32, copy=False)
+
+    def _green_screen_warm_luminous_prop_layer(
+        self,
+        base_alpha: np.ndarray,
+        frame: np.ndarray | None,
+    ) -> np.ndarray:
+        """Keep solid yellow/orange luminous props from being weakened by GVM fusion."""
+        if frame is None:
+            return np.zeros_like(base_alpha, dtype=np.float32)
+
+        frame_f = frame.astype(np.float32, copy=False)
+        red = frame_f[:, :, 0]
+        green = frame_f[:, :, 1]
+        blue = frame_f[:, :, 2]
+        screen_green = (green > red + 30.0) & (green > blue + 20.0) & (green > 90.0)
+        warm_luminous = (
+            (base_alpha >= 0.60)
+            & (red > 170.0)
+            & (green > 115.0)
+            & (blue < 175.0)
+            & ((red - blue) > 45.0)
+            & ((green - blue) > 8.0)
+            & (~screen_green)
+        )
+        if not np.any(warm_luminous):
+            return np.zeros_like(base_alpha, dtype=np.float32)
+
+        component_count, labels = cv2.connectedComponents(warm_luminous.astype(np.uint8), connectivity=8)
+        if component_count <= 1:
+            return np.zeros_like(base_alpha, dtype=np.float32)
+
+        component_sizes = np.bincount(labels.ravel())
+        keep_labels = np.where(component_sizes >= 12)[0]
+        keep_labels = keep_labels[keep_labels != 0]
+        if keep_labels.size == 0:
+            return np.zeros_like(base_alpha, dtype=np.float32)
+
+        kept = np.isin(labels, keep_labels)
+        return np.where(kept, np.maximum(base_alpha, 0.98), 0.0).astype(np.float32, copy=False)
 
     def _green_screen_cyan_halo_band_layer(
         self,

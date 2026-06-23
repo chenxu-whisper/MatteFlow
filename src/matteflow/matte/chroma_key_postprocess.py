@@ -17,8 +17,6 @@ def apply_chroma_key_postprocess(alphas: List[np.ndarray], config: MattingConfig
     - clip_black/clip_white: Alpha 裁剪
     - shrink_grow: 腐蚀/膨胀
     - edge_blur: 高斯模糊
-    
-    这些参数在 EZ-CorridorKey 中对应：
     - Clip Black / Clip White
     - Shrink/Grow
     - Edge Blur

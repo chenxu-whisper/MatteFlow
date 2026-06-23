@@ -22,7 +22,7 @@ class QualityMode(Enum):
 
 @dataclass
 class MattingConfig:
-    """抠图配置参数 - 全面对齐 EZ-CorridorKey"""
+    """抠图配置参数"""
     
     # ==================== 背景模式 ====================
     background_mode: BackgroundMode = BackgroundMode.AUTO
@@ -127,7 +127,7 @@ class MattingConfig:
     output_mask: bool = False             # 是否输出黑白遮罩
     output_debug: bool = False            # 是否输出中间调试图
     
-    # EZ-CorridorKey 风格四通道输出
+    # 四通道输出
     output_fg: bool = False               # 输出直接前景 (Straight FG)
     output_matte: bool = True             # 输出线性 Alpha (Linear Matte)
     output_comp: bool = False             # 输出预乘合成 (Premultiplied Comp)

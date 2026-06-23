@@ -12,10 +12,12 @@ from .errors import InputValidationError, JobCancelledError, ProgressCallbackErr
 from .input.decoder import ImageDecoder, SequenceDecoder, VideoDecoder
 from .input.formats import InputKind, detect_input_kind
 from .analysis.background_analyzer import BackgroundAnalyzer
+from .analysis.alpha_quality import AlphaQualityAnalyzer
 from .matte.matte_fusion import MatteFusion
 from .refine.edge_refiner import EdgeRefiner
 from .refine.color_decontaminate import ColorDecontaminate
 from .refine.despeckle import Despeckle
+from .refine.effect_prop_repair import EffectPropRepair
 from .temporal.temporal_stabilizer import TemporalStabilizer
 from .output.encoder import RGBAEncoder
 
@@ -28,10 +30,12 @@ class MattingPipeline:
     def __init__(self, config: Optional[MattingConfig] = None):
         self.config = config or MattingConfig()
         self.analyzer = BackgroundAnalyzer()
+        self.quality_analyzer = AlphaQualityAnalyzer()
         self.fusion = MatteFusion()
         self.refiner = EdgeRefiner(self.config)
         self.decontaminate = ColorDecontaminate(self.config)
         self.despeckle = Despeckle(self.config)
+        self.effect_prop_repair = EffectPropRepair(self.config)
         self.stabilizer = TemporalStabilizer(self.config)
         self.encoder = RGBAEncoder()
         
@@ -198,13 +202,31 @@ class MattingPipeline:
         else:
             logger.info("Skipping despeckle stage for quality mode: %s", self.config.quality_mode.value)
         
+        # 5.5. 特效道具完整性修复：用传统 key 的结构证据修复 AI 对小发光件的误抠
+        timings["effect_prop_repair"] = 0.0
+        if self.config.quality_mode in (QualityMode.STANDARD, QualityMode.HIGH):
+            stage_start = time.time()
+            alphas_before_effect_repair = [alpha.copy() for alpha in alphas]
+            repair_bg_mode = self._effective_decontamination_mode(bg_mode)
+            active_model = getattr(getattr(self, "hybrid_matte", None), "last_active_ai_model", None)
+            alphas = self.effect_prop_repair.process(
+                frames,
+                alphas,
+                repair_bg_mode,
+                active_model=active_model,
+            )
+            self._assert_frame_alpha_alignment("effect_prop_repair", frames, alphas)
+            self._log_alpha_stage_delta("effect_prop_repair", alphas_before_effect_repair, alphas)
+            timings["effect_prop_repair"] = time.time() - stage_start
+            self._check_cancelled(cancel_check)
+
         # 6. 时序稳定（移到颜色去污染之前，避免绿色泄漏）
         timings["stabilize"] = 0.0
         if self.config.quality_mode in (QualityMode.STANDARD, QualityMode.HIGH) and total_frames > 1:
             self._notify(progress_callback, 60, 100, "stabilizing")
             self._check_cancelled(cancel_check)
             stage_start = time.time()
-            alphas = self.stabilizer.stabilize(alphas)
+            alphas = self._stabilize_alphas(frames, alphas)
             self._assert_frame_alpha_alignment("stabilize", frames, alphas)
             timings["stabilize"] = time.time() - stage_start
             self._check_cancelled(cancel_check)
@@ -215,11 +237,20 @@ class MattingPipeline:
                 total_frames,
             )
         
-        # 7. 颜色去污染（在时序稳定之后，基于稳定的 alpha）
+        # 7. 质量诊断调试输出（基于稳定后的 alpha）
+        timings["quality_debug"] = 0.0
+        if getattr(self.config, "output_debug", False):
+            stage_start = time.time()
+            self._write_quality_debug_outputs(frames, alphas, output_dir)
+            timings["quality_debug"] = time.time() - stage_start
+            self._check_cancelled(cancel_check)
+
+        # 8. 颜色去污染（在时序稳定之后，基于稳定的 alpha）
         self._notify(progress_callback, 75, 100, "decontaminating")
         self._check_cancelled(cancel_check)
         stage_start = time.time()
-        frames = self.decontaminate.process(frames, alphas, bg_mode)
+        decontaminate_bg_mode = self._effective_decontamination_mode(bg_mode)
+        frames = self.decontaminate.process(frames, alphas, decontaminate_bg_mode)
         self._assert_sequence_length("decontaminate", total_frames, len(frames), "Frame")
         self._assert_frame_alpha_alignment("decontaminate", frames, alphas)
         timings["decontaminate"] = time.time() - stage_start
@@ -255,12 +286,14 @@ class MattingPipeline:
         logger.info(
             "Stage timings summary: "
             "decode=%.2fs analyze=%.2fs matte=%.2fs refine=%.2fs "
-            "despeckle=%.2fs stabilize=%.2fs decontaminate=%.2fs encode=%.2fs total=%.2fs",
+            "despeckle=%.2fs effect_prop_repair=%.2fs stabilize=%.2fs "
+            "decontaminate=%.2fs encode=%.2fs total=%.2fs",
             timings["decode"],
             timings["analyze"],
             timings["matte"],
             timings["refine"],
             timings["despeckle"],
+            timings["effect_prop_repair"],
             timings["stabilize"],
             timings["decontaminate"],
             timings["encode"],
@@ -291,6 +324,55 @@ class MattingPipeline:
                 f"which exceeds configured max_input_frames={max_input_frames}. "
                 "Increase max_input_frames or split the input before processing."
             )
+
+    def _effective_decontamination_mode(self, bg_mode: BackgroundMode) -> BackgroundMode:
+        if bg_mode != BackgroundMode.UNKNOWN:
+            return bg_mode
+
+        active_model = getattr(getattr(self, "hybrid_matte", None), "last_active_ai_model", None)
+        if active_model in {"traditional_green_fallback", "green_screen_fallback"}:
+            return BackgroundMode.GREEN_SCREEN
+        if active_model in {"traditional_black_fallback", "black_background_fallback"}:
+            return BackgroundMode.BLACK_BACKGROUND
+        return bg_mode
+
+    def _stabilize_alphas(self, frames, alphas):
+        """Stabilize alpha mattes with frame context when the stabilizer supports it."""
+        stabilize_params = inspect.signature(self.stabilizer.stabilize).parameters
+        if "frames" in stabilize_params:
+            return self.stabilizer.stabilize(alphas, frames=frames)
+        return self.stabilizer.stabilize(alphas)
+
+    def _write_quality_debug_outputs(self, frames, alphas, output_dir: Path):
+        """Write alpha quality overlays and a compact metric report when debug output is enabled."""
+        if not getattr(self.config, "output_debug", False):
+            return None
+
+        output_dir = Path(output_dir)
+        debug_dir = output_dir / "debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        report = self.quality_analyzer.analyze_sequence(frames, alphas)
+        for i, (frame, alpha) in enumerate(zip(frames, alphas)):
+            overlay = self.quality_analyzer.build_debug_overlay(frame, alpha)
+            self.encoder.encode_image(overlay, debug_dir / f"quality_overlay_{i:06d}.png")
+
+        report_path = debug_dir / "quality_report.txt"
+        report_path.write_text(
+            "\n".join(
+                [
+                    f"frame_count={report.frame_count}",
+                    f"overall_score={report.overall_score:.6f}",
+                    f"mean_edge_uncertainty={report.mean_edge_uncertainty:.6f}",
+                    f"speckle_pixels={report.speckle_pixels}",
+                    f"hole_pixels={report.hole_pixels}",
+                    f"background_residue={report.background_residue:.6f}",
+                    f"temporal_flicker={report.temporal_flicker:.6f}",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return report
     
     def _decode_input(self, input_path: Path):
         """解码输入"""
@@ -349,7 +431,6 @@ class MattingPipeline:
                 frame_f = frame_f * alpha_f[..., np.newaxis]
             return np.dstack([frame_f, alpha_f])
         
-        # EZ-CorridorKey 风格输出
         # 1. FG (Straight foreground) - 直接前景，未预乘
         if self.config.output_fg:
             fg_dir = output_dir / "FG"

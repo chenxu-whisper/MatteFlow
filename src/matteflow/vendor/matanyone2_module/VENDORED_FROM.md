@@ -1,6 +1,6 @@
 # Vendored From
 
-- Source repository: `EZ-CorridorKey`
+- Source repository: `CorridorKey`
 - Source path: `modules/MatAnyone2Module/`
 - Vendored into: `MatteFlow/src/matteflow/vendor/matanyone2_module/`
 - Reason: remove runtime dependency on external repository paths

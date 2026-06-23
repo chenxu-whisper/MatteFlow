@@ -147,6 +147,32 @@ class ColorDecontaminate:
         r_corrected = r + compensation
         b_corrected = b + compensation
 
+        # 黄色/橙色发光物周围经常有 alpha 已经变成 1 的绿幕混色边。
+        # 这些像素不会进入普通 edge_mask，所以用邻接黄色发光区域单独中和。
+        warm_luminous = (
+            (r > 170)
+            & (g > 115)
+            & (b < 175)
+            & ((r - b) > 45)
+            & ((g - b) > 8)
+        )
+        if np.any(warm_luminous):
+            warm_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17))
+            warm_reach = cv2.dilate(warm_luminous.astype(np.uint8), warm_kernel, iterations=1).astype(bool)
+            solid_green_spill = (
+                warm_reach
+                & (alpha > 0.20)
+                & (g > r + 12)
+                & (g > b + 6)
+                & (r < 170)
+                & (g > 95)
+            )
+            if np.any(solid_green_spill):
+                spill_gap = np.maximum(0, g - np.maximum(r, b))
+                r_corrected = np.where(solid_green_spill, r_corrected + spill_gap * 0.70, r_corrected)
+                g_corrected = np.where(solid_green_spill, g_corrected - spill_gap * 0.45, g_corrected)
+                b_corrected = np.where(solid_green_spill, b_corrected + spill_gap * 0.18, b_corrected)
+
         # 6.5 对中高 alpha 的混色边做真正的前景反混色恢复。
         # 仅在存在明显绿色屏幕污染时启用，避免改坏正常蓝紫辉光。
         screen_mix_score = np.maximum(0.0, g - r) + 0.5 * np.maximum(0.0, g - b)
@@ -212,11 +238,61 @@ class ColorDecontaminate:
             r_corrected = r_corrected + ring_teal_gap * 0.55 * ring_cleanup
             g_corrected = g_corrected - ring_teal_gap * 0.20 * ring_cleanup
 
+        # 10. 对黄色发光道具邻域做局部色彩投影。这里不改变 alpha，只把仍然
+        # 朝绿幕方向偏移的残留像素投回暖色/中性色方向，保护星星和细杆边缘。
+        prop_reach = self._warm_luminous_prop_reach(frame, alpha)
+        if np.any(prop_reach):
+            prop_green_residue = (
+                prop_reach
+                & (alpha > 0.08)
+                & (g_corrected > r_corrected + 6)
+                & (g_corrected > b_corrected + 3)
+            )
+            if np.any(prop_green_residue):
+                prop_gap = np.maximum(0.0, g_corrected - np.maximum(r_corrected, b_corrected))
+                r_corrected = np.where(prop_green_residue, r_corrected + prop_gap * 0.45, r_corrected)
+                g_corrected = np.where(prop_green_residue, g_corrected - prop_gap * 0.85, g_corrected)
+                b_corrected = np.where(prop_green_residue, b_corrected + prop_gap * 0.10, b_corrected)
+
         result[:, :, 0] = np.clip(r_corrected, 0, 255)
         result[:, :, 1] = np.clip(g_corrected, 0, 255)
         result[:, :, 2] = np.clip(b_corrected, 0, 255)
         
         return result.astype(np.uint8)
+
+    def _warm_luminous_prop_reach(self, frame: np.ndarray, alpha: np.ndarray) -> np.ndarray:
+        frame_f = frame.astype(np.float32, copy=False)
+        red = frame_f[:, :, 0]
+        green = frame_f[:, :, 1]
+        blue = frame_f[:, :, 2]
+        screen_green = (green > red + 30.0) & (green > blue + 20.0) & (green > 90.0)
+        warm_seed = (
+            (red > 170.0)
+            & (green > 115.0)
+            & (blue < 175.0)
+            & ((red - blue) > 45.0)
+            & ((green - blue) > 8.0)
+            & (~screen_green)
+            & (alpha > 0.20)
+        )
+        gold_green_edge_seed = (
+            (red > 110.0)
+            & (green > 100.0)
+            & (blue < 130.0)
+            & ((red - blue) > 35.0)
+            & ((green - blue) > 35.0)
+            & ((green - red) < 55.0)
+            & (~screen_green)
+            & (alpha > 0.20)
+        )
+        warm_seed = warm_seed | gold_green_edge_seed
+        if not np.any(warm_seed):
+            return np.zeros(alpha.shape, dtype=bool)
+        return cv2.dilate(
+            warm_seed.astype(np.uint8, copy=False),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 19)),
+            iterations=1,
+        ).astype(bool)
     
     def _remove_black_spill(self, frame: np.ndarray, alpha: np.ndarray) -> np.ndarray:
         """去除黑边/发灰 - 修复版：保护粒子/辉光颜色"""

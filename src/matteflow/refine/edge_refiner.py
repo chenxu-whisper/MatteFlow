@@ -42,6 +42,7 @@ class EdgeRefiner:
         
         # 3. 局部导向滤波细化
         refined = self._local_guided_filter(frame, alpha, unknown_mask)
+        refined = self._restore_warm_luminous_props(frame, alpha, refined)
         
         return refined
     
@@ -89,3 +90,27 @@ class EdgeRefiner:
         result = np.where(mask, smoothed, result)
         
         return np.clip(result, 0, 1)
+
+    def _restore_warm_luminous_props(
+        self,
+        frame: np.ndarray,
+        original: np.ndarray,
+        refined: np.ndarray,
+    ) -> np.ndarray:
+        frame_f = frame.astype(np.float32, copy=False)
+        red = frame_f[:, :, 0]
+        green = frame_f[:, :, 1]
+        blue = frame_f[:, :, 2]
+        screen_green = (green > red + 30.0) & (green > blue + 20.0) & (green > 90.0)
+        warm_luminous = (
+            (original >= 0.95)
+            & (red > 170.0)
+            & (green > 115.0)
+            & (blue < 175.0)
+            & ((red - blue) > 45.0)
+            & ((green - blue) > 8.0)
+            & (~screen_green)
+        )
+        if not np.any(warm_luminous):
+            return refined
+        return np.where(warm_luminous, np.maximum(refined, original), refined).astype(np.float32, copy=False)

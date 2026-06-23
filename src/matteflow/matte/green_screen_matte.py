@@ -1,4 +1,4 @@
-"""绿幕 Matte 生成模块 - 对齐 EZ-CorridorKey Chroma Key 参数
+"""绿幕 Matte 生成模块
 
 支持参数：
 - screen_color: auto/green/blue
@@ -15,21 +15,21 @@ from ..config import MattingConfig
 
 
 class GreenScreenMatte:
-    """绿幕抠图引擎 - 对齐 EZ-CorridorKey Chroma Key"""
+    """绿幕抠图引擎"""
     
     def __init__(self, config: MattingConfig):
         self.config = config
         self._key_color = None
     
     def generate(self, frame: np.ndarray) -> np.ndarray:
-        """生成绿幕 Alpha Matte — 对齐 EZ-CorridorKey Chroma Key 算法"""
+        """生成绿幕 Alpha Matte"""
         
         # 调试：打印参数
         print(f"[GreenScreen] key_strength={self.config.key_strength}, "
               f"clip_black={self.config.clip_black}, clip_white={self.config.clip_white}, "
               f"shrink_grow={self.config.shrink_grow}, edge_blur={self.config.edge_blur}")
         
-        # 使用 EZ-CorridorKey 风格的 Color-Difference 方法
+        # 使用 Color-Difference 方法
         alpha = self._chroma_key_matte(frame)
         
         # 应用 Shrink/Grow
@@ -99,6 +99,9 @@ class GreenScreenMatte:
         if strength != 1.0:
             key = np.power(key, 1.0 / max(strength, 0.1))
         
+        if screen_type == "green":
+            key = self._protect_warm_luminous_foreground_key(key, r, g, b)
+
         # 亮度保护：很暗的区域不处理（避免把阴影当绿幕）
         brightness = np.maximum(np.maximum(r, g), b)
         dark_mask = np.clip((brightness - 0.03) / 0.07, 0, 1)
@@ -106,6 +109,7 @@ class GreenScreenMatte:
         
         # Alpha = 前景透明度 = 1 - 背景程度
         alpha = 1.0 - key
+        alpha = self._suppress_screen_background_core(alpha, key)
         
         # Clip Black / Clip White
         clip_black = self.config.clip_black
@@ -122,9 +126,49 @@ class GreenScreenMatte:
             alpha_u8 = cv2.morphologyEx(alpha_u8, cv2.MORPH_CLOSE, kernel)
         
         return alpha_u8.astype(np.float32) / 255.0
+
+    def _protect_warm_luminous_foreground_key(
+        self,
+        key: np.ndarray,
+        r: np.ndarray,
+        g: np.ndarray,
+        b: np.ndarray,
+    ) -> np.ndarray:
+        """Keep yellow/orange glow cores from being keyed as backing-screen spill."""
+        warm_luminous = (
+            (r > 0.48)
+            & (g > 0.42)
+            & (b < 0.58)
+            & ((r - b) > 0.16)
+            & ((g - b) > 0.10)
+            & ((r + 0.26) > g)
+        )
+        if not np.any(warm_luminous):
+            return key
+
+        protected_key = key.copy()
+        solid_core = warm_luminous & (r > 0.62) & (g > 0.50) & (b < 0.50)
+        protected_key[warm_luminous] *= 0.18
+        protected_key[solid_core] = 0.0
+        return protected_key
+
+    def _suppress_screen_background_core(self, alpha: np.ndarray, key: np.ndarray) -> np.ndarray:
+        """Force confident backing-screen pixels to fully transparent."""
+        if alpha.size < 4096:
+            return alpha
+        background_core = key >= 0.65
+        if not np.any(background_core):
+            return alpha
+        cleaned = alpha.copy()
+        cleaned[background_core] = 0.0
+        transition = (key >= 0.50) & (key < 0.65)
+        if np.any(transition):
+            transition_weight = np.clip((key[transition] - 0.50) / 0.15, 0.0, 1.0)
+            cleaned[transition] = cleaned[transition] * (1.0 - transition_weight)
+        return cleaned
     
     def _compute_ref_excess(self, img: np.ndarray, sc: int, c1: int, c2: int, screen_type: str) -> float:
-        """计算参考 excess 值 — 对齐 EZ-CorridorKey
+        """计算参考 excess 值
         
         支持多点采样，使用 10th percentile 避免异常值
         """

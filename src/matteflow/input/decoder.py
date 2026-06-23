@@ -40,7 +40,7 @@ class VideoDecoder:
             f"Input {input_path} exceeds configured max_input_frames={self.max_frames}. "
             "Increase max_input_frames or split the input before processing."
         )
-    
+
     def decode(self, video_path: Path) -> Tuple[List[np.ndarray], Dict]:
         """
         解码视频文件
