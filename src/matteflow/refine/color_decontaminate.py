@@ -5,6 +5,7 @@ import cv2
 
 from ..analysis.region_ownership import RegionOwnershipAnalyzer
 from ..config import MattingConfig, BackgroundMode
+from .foreground_color_recovery import ForegroundColorRecovery
 
 
 class ColorDecontaminate:
@@ -13,14 +14,21 @@ class ColorDecontaminate:
     def __init__(self, config: MattingConfig):
         self.config = config
         self._region_analyzer = RegionOwnershipAnalyzer()
+        self._foreground_recovery = ForegroundColorRecovery(config)
     
     def process(self, frames, alphas, bg_mode, context=None):
         processed = []
         context = context or {}
+        enable_foreground_recovery = context.get("active_ai_model") != "gvm"
         for index, (frame, alpha) in enumerate(zip(frames, alphas)):
             ownership = self._ownership_from_context(context, index)
             if bg_mode == BackgroundMode.GREEN_SCREEN:
-                result = self._remove_green_spill(frame, alpha, ownership=ownership)
+                result = self._remove_green_spill(
+                    frame,
+                    alpha,
+                    ownership=ownership,
+                    enable_foreground_recovery=enable_foreground_recovery,
+                )
             elif bg_mode == BackgroundMode.BLACK_BACKGROUND:
                 result = self._remove_black_spill(frame, alpha)
             else:
@@ -77,7 +85,13 @@ class ColorDecontaminate:
         recovered = (frame_f - (1.0 - alpha_f)[..., np.newaxis] * screen) / safe_alpha[..., np.newaxis]
         return np.clip(recovered, 0.0, 255.0)
     
-    def _remove_green_spill(self, frame: np.ndarray, alpha: np.ndarray, ownership=None) -> np.ndarray:
+    def _remove_green_spill(
+        self,
+        frame: np.ndarray,
+        alpha: np.ndarray,
+        ownership=None,
+        enable_foreground_recovery: bool = True,
+    ) -> np.ndarray:
         """去除绿溢色 - 保守版：只处理明显绿边，保护白色/浅色区域"""
         result = frame.astype(np.float32)
         r, g, b = result[:, :, 0], result[:, :, 1], result[:, :, 2]
@@ -242,6 +256,31 @@ class ColorDecontaminate:
             r_corrected = r_corrected + ring_teal_gap * 0.55 * ring_cleanup
             g_corrected = g_corrected - ring_teal_gap * 0.20 * ring_cleanup
 
+        # 9.5 GVM can produce near-solid alpha on teal-green screen residue.
+        # This sits outside the regular soft-edge cleanup, so neutralize only the
+        # narrow color signature instead of broadening all high-alpha despill.
+        high_alpha_teal_green_cast = (
+            (alpha > 0.45)
+            & (corrected_brightness > 70)
+            & (corrected_brightness < 190)
+            & (r_corrected < 130)
+            & (b_corrected < 185)
+            & (g_corrected > r_corrected + 12)
+            & (g_corrected > b_corrected + 3)
+        )
+        if np.any(high_alpha_teal_green_cast):
+            high_alpha_gap = np.maximum(0.0, g_corrected - r_corrected)
+            r_corrected = np.where(
+                high_alpha_teal_green_cast,
+                r_corrected + high_alpha_gap * 1.15,
+                r_corrected,
+            )
+            g_corrected = np.where(
+                high_alpha_teal_green_cast,
+                g_corrected - high_alpha_gap * 0.30,
+                g_corrected,
+            )
+
         # 10. 对黄色发光道具邻域做局部色彩投影。这里不改变 alpha，只把仍然
         # 朝绿幕方向偏移的残留像素投回暖色/中性色方向，保护星星和细杆边缘。
         prop_reach = self._warm_luminous_prop_reach(frame, alpha)
@@ -266,7 +305,10 @@ class ColorDecontaminate:
         result[:, :, 1] = np.clip(g_corrected, 0, 255)
         result[:, :, 2] = np.clip(b_corrected, 0, 255)
         
-        return result.astype(np.uint8)
+        result_u8 = result.astype(np.uint8)
+        if not enable_foreground_recovery:
+            return result_u8
+        return self._foreground_recovery.recover(result_u8, alpha, ownership=ownership)
 
     @staticmethod
     def _ownership_from_context(context: dict, index: int):
