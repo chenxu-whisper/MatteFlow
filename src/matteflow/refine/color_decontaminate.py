@@ -1,39 +1,49 @@
 """颜色去污染模块 - 优化版"""
 
-import numpy as np
 import cv2
+import numpy as np
 
 from ..analysis.region_ownership import RegionOwnershipAnalyzer
-from ..config import MattingConfig, BackgroundMode
+from ..config import BackgroundMode, MattingConfig
 from .foreground_color_recovery import ForegroundColorRecovery
 
 
 class ColorDecontaminate:
     """颜色去污染/边缘修复 - 优化版：更强去绿边"""
-    
+
     def __init__(self, config: MattingConfig):
         self.config = config
         self._region_analyzer = RegionOwnershipAnalyzer()
         self._foreground_recovery = ForegroundColorRecovery(config)
-    
+
     def process(self, frames, alphas, bg_mode, context=None):
         processed = []
-        context = context or {}
+        if context is None:
+            context = {}
         enable_foreground_recovery = context.get("active_ai_model") != "gvm"
+        ownerships = []
         for index, (frame, alpha) in enumerate(zip(frames, alphas)):
             ownership = self._ownership_from_context(context, index)
+            ownerships.append(ownership)
             if bg_mode == BackgroundMode.GREEN_SCREEN:
                 result = self._remove_green_spill(
                     frame,
                     alpha,
                     ownership=ownership,
-                    enable_foreground_recovery=enable_foreground_recovery,
+                    enable_foreground_recovery=False,
                 )
             elif bg_mode == BackgroundMode.BLACK_BACKGROUND:
                 result = self._remove_black_spill(frame, alpha)
             else:
                 result = frame.copy()
             processed.append(result)
+        if bg_mode == BackgroundMode.GREEN_SCREEN and enable_foreground_recovery:
+            processed = self._foreground_recovery.recover_sequence(
+                processed,
+                alphas,
+                ownerships=ownerships,
+            )
+            context["foreground_recovery"] = dict(self._foreground_recovery.last_sequence_diagnostics)
         return processed
 
     def _transparency_band(self, alpha: np.ndarray, low: float = 0.02, high: float = 0.75) -> np.ndarray:
@@ -84,7 +94,7 @@ class ColorDecontaminate:
         screen = screen_rgb.astype(np.float32, copy=False).reshape(1, 1, 3)
         recovered = (frame_f - (1.0 - alpha_f)[..., np.newaxis] * screen) / safe_alpha[..., np.newaxis]
         return np.clip(recovered, 0.0, 255.0)
-    
+
     def _remove_green_spill(
         self,
         frame: np.ndarray,
@@ -97,13 +107,13 @@ class ColorDecontaminate:
         r, g, b = result[:, :, 0], result[:, :, 1], result[:, :, 2]
         screen_rgb = self._estimate_green_screen_color(frame, alpha)
         recovered_fg = self._recover_green_screen_foreground(frame, alpha, screen_rgb)
-        
+
         strength = self.config.green_despill_strength
-        
+
         # 1. 检测绿色溢色。主体边缘仍使用严格阈值，半透明辉光区使用更敏感阈值。
         threshold = 15
         green_tint = (g > r + threshold) & (g > b + threshold)
-        
+
         # 2. 强白色保护 - 避免把白色/灰色去成粉色
         brightness = np.mean(result, axis=2)
         # 白色 = 高亮度 + 低饱和度（RGB接近）
@@ -111,7 +121,7 @@ class ColorDecontaminate:
         white_brightness = getattr(self.config, "white_protect_brightness", 180)
         white_saturation = getattr(self.config, "white_protect_saturation", 25)
         white_mask = (brightness > white_brightness) & (rgb_diff < white_saturation)
-        
+
         # 3. 只处理边缘/半透明区域，完全前景和完全背景不处理
         edge_mask = (alpha > 0.05) & (alpha < 0.95)
         glow_mask = (alpha > 0.005) & (alpha < 0.85)
@@ -123,10 +133,10 @@ class ColorDecontaminate:
             & (g > b + 6)
             & (g > 145)
         )
-        
+
         # 4. 计算绿色过量（只在边缘且明显发绿的地方）
         green_excess = np.maximum(0, g - np.maximum(r, b))
-        
+
         # 边缘去绿：alpha 越低（越接近背景）→ 去绿越强
         edge_factor = np.clip((0.95 - alpha) / 0.9, 0, 1)  # 0.05→1.0, 0.95→0.0
         despill = green_excess * strength * edge_factor * self.config.edge_despill_factor
@@ -146,20 +156,20 @@ class ColorDecontaminate:
             * self.config.edge_despill_factor
             * 1.55
         )
-        
+
         # 主体边缘只处理明显发绿；辉光区额外处理低饱和绿色雾边。
         despill_mask = (green_tint & edge_mask) | subtle_green_haze | pink_glow_haze
         glow_despill = np.maximum(haze_despill, target_haze_despill)
         despill = np.where(subtle_green_haze, np.maximum(despill, glow_despill), despill)
         despill = np.where(pink_glow_haze, np.maximum(despill, pink_haze_despill), despill)
         despill = despill * despill_mask
-        
+
         # 白色区域：几乎不去绿（保护白色毛发/耳朵）
         despill = np.where(white_mask, despill * 0.05, despill)
-        
+
         # 5. 应用去绿
         g_corrected = g - despill
-        
+
         # 6. 补偿到 R 和 B（保持亮度）
         compensation = despill * 0.5
         r_corrected = r + compensation
@@ -201,7 +211,7 @@ class ColorDecontaminate:
         r_corrected = r_corrected * (1.0 - unmix_weight) + recovered_fg[:, :, 0] * unmix_weight
         g_corrected = g_corrected * (1.0 - unmix_weight) + recovered_fg[:, :, 1] * unmix_weight
         b_corrected = b_corrected * (1.0 - unmix_weight) + recovered_fg[:, :, 2] * unmix_weight
-        
+
         # 7. 半透明辉光补亮：AI/绿幕融合会保留 alpha，但 RGB 仍可能是暗背景色，
         # 合成到棋盘或任意背景上会表现为黑边。只修低亮度半透明区，避开主体白色区域。
         corrected_brightness = (r_corrected + g_corrected + b_corrected) / 3.0
@@ -304,7 +314,7 @@ class ColorDecontaminate:
         result[:, :, 0] = np.clip(r_corrected, 0, 255)
         result[:, :, 1] = np.clip(g_corrected, 0, 255)
         result[:, :, 2] = np.clip(b_corrected, 0, 255)
-        
+
         result_u8 = result.astype(np.uint8)
         if not enable_foreground_recovery:
             return result_u8
@@ -350,37 +360,37 @@ class ColorDecontaminate:
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 19)),
             iterations=1,
         ).astype(bool)
-    
+
     def _remove_black_spill(self, frame: np.ndarray, alpha: np.ndarray) -> np.ndarray:
         """去除黑边/发灰 - 修复版：保护粒子/辉光颜色"""
         result = frame.astype(np.float32)
-        
+
         brightness = np.mean(result, axis=2)
         max_c = np.max(result, axis=2)
         min_c = np.min(result, axis=2)
         color_range = max_c - min_c
-        
+
         # 1. 黑边区域（暗部边缘）
         black_edge = (alpha > 0.05) & (alpha < 0.95) & (brightness < 60)
-        
+
         # 2. 提升暗部 - 保守提升，避免过曝粒子
         boost = self.config.black_despill_strength
         # 根据 alpha 调整提升量：半透明区域提升更多
         lift = np.maximum(0, 50 - brightness) * boost * (1.0 - alpha) * 0.3
-        
+
         for c in range(3):
             result[:, :, c] = np.where(black_edge, result[:, :, c] + lift, result[:, :, c])
-        
+
         # 3. 颜色增强（去灰）- 保护已有颜色的粒子
         hsv = cv2.cvtColor(np.clip(result, 0, 255).astype(np.uint8), cv2.COLOR_RGB2HSV).astype(np.float32)
-        h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+        s, v = hsv[:, :, 1], hsv[:, :, 2]
         transparency_mask = self._transparency_band(alpha, 0.02, 0.75)
-        
+
         # 只对灰度区域增强饱和度
         gray_mask = (alpha > 0.1) & (s < 50) & (v > 15) & (color_range < 15)
         s_boost = s * (1.0 + self.config.black_contrast_restore * 0.5)
         s = np.where(gray_mask, np.clip(s_boost, 0, 255), s)
-        
+
         # 4. 暗部亮度提升 - 保护极暗粒子
         dark_mask = (alpha > 0.05) & (v < 60) & (v > 5)  # v > 5 保护纯黑
         v_boost = v * (1.0 + self.config.black_contrast_restore * 0.2)
@@ -393,19 +403,19 @@ class ColorDecontaminate:
         v = np.where(dim_particle, np.clip(particle_v_boost, 0, 255), v)
         haze_s_boost = s + np.clip((40 - s) * 0.45, 0, 18)
         s = np.where(gray_haze_mask, np.clip(haze_s_boost, 0, 255), s)
-        
+
         hsv[:, :, 1] = s
         hsv[:, :, 2] = v
-        
+
         result = cv2.cvtColor(np.clip(hsv, 0, 255).astype(np.uint8), cv2.COLOR_HSV2RGB)
-        
+
         # 5. 粒子颜色保护 - 暗部亮点保持原色
         particle_mask = (alpha > 0.1) & (brightness < 40) & (color_range > 10)
         # 这些区域不过度处理，保持原始颜色
         original = frame.astype(np.float32)
         blend = 0.3  # 保留 30% 原始颜色
         for c in range(3):
-            result[:, :, c] = np.where(particle_mask, 
+            result[:, :, c] = np.where(particle_mask,
                                        result[:, :, c] * (1 - blend) + original[:, :, c] * blend,
                                        result[:, :, c])
 
@@ -416,5 +426,5 @@ class ColorDecontaminate:
         result[:, :, 0] = np.where(dim_particle_rgb, result[:, :, 0] + rgb_lift * 0.85, result[:, :, 0])
         result[:, :, 1] = np.where(dim_particle_rgb, result[:, :, 1] + rgb_lift * 1.00, result[:, :, 1])
         result[:, :, 2] = np.where(dim_particle_rgb, result[:, :, 2] + rgb_lift * 0.90, result[:, :, 2])
-        
+
         return np.clip(result, 0, 255).astype(np.uint8)
