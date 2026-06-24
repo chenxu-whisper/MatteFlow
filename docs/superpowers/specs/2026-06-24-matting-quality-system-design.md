@@ -1,97 +1,97 @@
-# Matting Quality System Design
+# 抠图质量系统设计
 
-Date: 2026-06-24
+日期：2026-06-24
 
-## Summary
+## 概要
 
-MatteFlow needs a quality decision layer that makes MatAnyone2, SAM2, and BiRefNet measurable, selectable, and regression-tested. The goal is not to add one more model priority rule. The goal is to generate multiple candidate mattes, evaluate their reliability by region, select or fuse the best candidate for each region, and record enough evidence to compare quality across future changes.
+MatteFlow 需要增加一层质量决策能力，让 MatAnyone2、SAM2 和 BiRefNet 变得可评估、可选择、可回归。目标不是再增加一条模型优先级规则，而是生成多路候选 matte，按区域评估它们的可靠性，为每个区域选择或融合最合适的候选结果，并记录足够证据，用于后续质量对比和回归判断。
 
-This design focuses on the quality problems observed in the current visual review:
+本设计聚焦当前视觉 review 中暴露出的质量问题：
 
-- Model disagreement: base, GVM, and fused outputs can contradict each other, causing subject loss or false retention.
-- Soft-edge and hair detail loss: alpha transitions can become hard, broken, or overly cleaned by later stages.
-- Residue and contamination: green or gray edge residue can survive, while color decontamination can also become too aggressive.
+- 模型分歧：base、GVM 和融合输出可能互相矛盾，导致主体漏抠或背景误保留。
+- 软边和发丝细节损失：alpha 过渡可能变硬、断裂，或被后续阶段过度清理。
+- 残留和污染：绿色或灰色边缘残留仍可能保留，颜色去污染也可能过度处理。
 
-The first implementation should use rule-based quality metrics and deterministic selection. The interfaces must leave room for a learned quality evaluator later.
+第一阶段实现应使用规则型质量指标和确定性选择策略。接口需要为后续 learned quality evaluator 预留空间。
 
-## Goals
+## 目标
 
-1. Make MatAnyone2, SAM2, and BiRefNet comparable through a shared candidate output contract.
-2. Produce quality signals for each candidate at frame level and region level.
-3. Select or fuse candidates by region instead of choosing one model for a whole frame.
-4. Record model decisions, quality signals, and visual artifacts in the existing processing report flow.
-5. Add a regression workflow that can compare quality changes on a fixed difficult sample set.
-6. Keep existing green-screen, black-background, and fallback behavior available while the new quality system is rolled out.
+1. 通过统一候选输出协议，让 MatAnyone2、SAM2 和 BiRefNet 可以被横向比较。
+2. 为每个候选结果产出帧级和区域级质量信号。
+3. 按区域选择或融合候选结果，而不是整帧只选择一个模型。
+4. 在现有 processing report 流程中记录模型决策、质量信号和视觉证据。
+5. 增加固定困难样本集的质量回归工作流，用于比较质量变化。
+6. 在新质量系统逐步上线期间，保留现有绿幕、黑底和 fallback 行为。
 
-## Non-Goals
+## 非目标
 
-1. Training or fine-tuning a new model in the first phase.
-2. Replacing the entire `HybridMatte` implementation in one change.
-3. Building a cloud service or distributed inference system.
-4. Requiring manual labels for every sample before the first useful regression suite exists.
-5. Making SAM2 mandatory for all runs. SAM2 should be used when target guidance is available or when the selector needs semantic constraints.
+1. 第一阶段不训练或微调新模型。
+2. 不在一次改动中替换整个 `HybridMatte` 实现。
+3. 不建设云服务或分布式推理系统。
+4. 不要求在第一版可用回归套件之前为所有样本提供人工标注。
+5. 不让 SAM2 成为所有运行的强制依赖。SAM2 应在存在目标引导，或 selector 需要语义约束时使用。
 
-## Current Context
+## 当前上下文
 
-The current codebase already has important pieces:
+当前代码库已经具备一些关键基础：
 
-- `src/matteflow/matte/hybrid_matte.py` coordinates traditional mattes, AI models, fallback logic, and green-screen-specific fusion.
-- `src/matteflow/matte/fusion_quality_gate.py` has an initial region-aware fusion mechanism.
-- `src/matteflow/analysis/region_ownership.py` classifies subject, hair edge, transparent effect, luminous prop, uncertain edge, and background residue regions.
-- `src/matteflow/analysis/alpha_quality.py` computes lightweight alpha quality signals.
-- `src/matteflow/analysis/p0_quality.py` classifies high-level risks.
-- `src/matteflow/reporting/processing_report.py` already emits structured processing reports.
-- `tests/core/test_quality_regression.py` provides a starting point for report-based regression checks.
+- `src/matteflow/matte/hybrid_matte.py` 协调传统 matte、AI 模型、fallback 逻辑和绿幕专项融合。
+- `src/matteflow/matte/fusion_quality_gate.py` 已经有初步的区域感知融合机制。
+- `src/matteflow/analysis/region_ownership.py` 可以分类 subject、hair edge、transparent effect、luminous prop、uncertain edge 和 background residue 区域。
+- `src/matteflow/analysis/alpha_quality.py` 可以计算轻量 alpha 质量信号。
+- `src/matteflow/analysis/p0_quality.py` 可以分类高层质量风险。
+- `src/matteflow/reporting/processing_report.py` 已经能输出结构化处理报告。
+- `tests/core/test_quality_regression.py` 为基于报告的回归检查提供了起点。
 
-The gap is that candidate generation, quality evaluation, selection, and regression are not unified around MatAnyone2, SAM2, and BiRefNet.
+当前缺口是：候选生成、质量评估、候选选择和回归机制还没有围绕 MatAnyone2、SAM2、BiRefNet 形成统一系统。
 
-## Proposed Architecture
+## 推荐架构
 
-Add a quality decision layer with four new responsibilities:
+新增一层质量决策能力，承担四类职责：
 
-1. Candidate generation
-2. Candidate evaluation
-3. Region-level selection
-4. Regression evidence generation
+1. 候选生成
+2. 候选评估
+3. 区域级选择
+4. 回归证据生成
 
-The data flow is:
+数据流如下：
 
 ```text
-Decoded frames
+已解码帧
   |
   v
-Background analysis / optional user guidance
+背景分析 / 可选用户引导
   |
   v
-Candidate generators
-  |-- MatAnyone2 candidate
-  |-- SAM2-guided candidate
-  |-- BiRefNet candidate
-  |-- existing traditional/base candidate
+候选生成器
+  |-- MatAnyone2 候选
+  |-- SAM2-guided 候选
+  |-- BiRefNet 候选
+  |-- 现有 traditional/base 候选
   |
   v
-Quality evaluator
+质量评估器
   |
   v
-Region-level selector
+区域级选择器
   |
   v
-Selected alpha sequence + decision diagnostics
+选中的 alpha 序列 + 决策诊断
   |
   v
-Existing refine / despeckle / repair / temporal / decontaminate / encode stages
+现有 refine / despeckle / repair / temporal / decontaminate / encode 阶段
   |
   v
-Processing report + regression artifacts
+处理报告 + 回归证据产物
 ```
 
-## Module Design
+## 模块设计
 
-### 1. Candidate Contract
+### 1. 候选结果协议
 
-Introduce candidate contracts under `src/matteflow/matte/candidates/`. Use a package instead of a single large file because the real model adapters will grow independently.
+在 `src/matteflow/matte/candidates/` 下引入候选结果协议。这里应使用 package，而不是单个大文件，因为真实模型适配器会独立增长。
 
-Each candidate generator returns:
+每个候选生成器返回：
 
 ```python
 @dataclass(frozen=True)
@@ -104,7 +104,7 @@ class MatteCandidate:
     diagnostics: dict[str, Any]
 ```
 
-For sequences:
+序列场景返回：
 
 ```python
 @dataclass(frozen=True)
@@ -117,48 +117,48 @@ class MatteCandidateSequence:
     diagnostics: dict[str, Any]
 ```
 
-Rules:
+规则：
 
-- `alpha` must be float32, clipped to `[0.0, 1.0]`, and match the frame height and width.
-- `confidence` is optional in phase one. If absent, the evaluator derives confidence from quality metrics and region ownership.
-- `source` should be stable, for example `matanyone2`, `sam2_guided`, `birefnet`, `traditional_green`, or `traditional_black`.
-- `diagnostics` must be JSON-serializable.
+- `alpha` 必须是 float32，裁剪到 `[0.0, 1.0]`，并且与帧的高度和宽度一致。
+- `confidence` 在第一阶段是可选字段。如果缺失，评估器从质量指标和区域归属中推导置信度。
+- `source` 必须稳定，例如 `matanyone2`、`sam2_guided`、`birefnet`、`traditional_green` 或 `traditional_black`。
+- `diagnostics` 必须可 JSON 序列化。
 
-### 2. Candidate Generators
+### 2. 候选生成器
 
-Add wrappers that adapt existing model modules without changing their internal inference code first:
+新增 wrapper 来适配现有模型模块。第一阶段先不改动模型内部推理代码：
 
 - `MatAnyone2CandidateGenerator`
 - `SAM2GuidedCandidateGenerator`
 - `BiRefNetCandidateGenerator`
 - `TraditionalCandidateGenerator`
 
-The wrappers should handle model availability, cancellation checks, progress callbacks, output normalization, and timing. If a model is unavailable, the generator returns a structured skipped result instead of throwing unless the user explicitly requested that model.
+wrapper 负责处理模型可用性、取消检查、进度回调、输出归一化和耗时统计。如果模型不可用，生成器应返回结构化的 skipped 结果；只有用户显式指定该模型时，才应抛出错误。
 
-SAM2 should be treated as guidance-first:
+SAM2 应按“引导优先”处理：
 
-- If a first-frame mask, box, or point prompt exists, SAM2 produces a target constraint candidate.
-- If no guidance exists, SAM2 can be skipped by default in phase one to avoid turning semantic segmentation uncertainty into false alpha confidence.
-- The selector may use SAM2 output as a region constraint even when SAM2 is not the final alpha source.
+- 如果存在首帧 mask、box 或 point prompt，SAM2 产出目标约束候选结果。
+- 如果没有引导信息，第一阶段默认可以跳过 SAM2，避免把语义分割的不确定性误当成 alpha 置信度。
+- 即使 SAM2 不是最终 alpha 来源，selector 也可以把 SAM2 输出作为区域约束使用。
 
-### 3. Quality Evaluator
+### 3. 质量评估器
 
-Add `src/matteflow/evaluation/matte_quality.py`.
+新增 `src/matteflow/evaluation/matte_quality.py`。
 
-The evaluator consumes frames, candidate alphas, optional confidences, and region ownership. It returns per-candidate and per-region scores.
+评估器消费 frames、candidate alphas、可选 confidences 和 region ownership，返回候选级和区域级分数。
 
-Initial signals:
+第一阶段质量信号：
 
-- `subject_coverage`: whether known subject-like regions retain enough alpha.
-- `soft_edge_continuity`: whether soft alpha bands are continuous instead of broken or stair-stepped.
-- `hair_edge_preservation`: whether hair/feather edge regions avoid low-alpha collapse.
-- `background_cleanliness`: whether background-residue regions stay near zero alpha.
-- `transparent_effect_preservation`: whether transparent or luminous regions avoid being erased.
-- `spill_risk`: whether green/gray contaminated edge regions remain likely visible.
-- `temporal_stability`: frame-to-frame alpha change in comparable regions.
-- `model_disagreement`: how strongly a candidate differs from other candidates in important regions.
+- `subject_coverage`：已知主体类区域是否保留足够 alpha。
+- `soft_edge_continuity`：软 alpha 带是否连续，避免断裂或阶梯状边缘。
+- `hair_edge_preservation`：发丝/羽毛边缘区域是否避免低 alpha 坍缩。
+- `background_cleanliness`：背景残留区域是否接近零 alpha。
+- `transparent_effect_preservation`：透明或发光区域是否避免被抹掉。
+- `spill_risk`：绿色/灰色污染边缘是否仍可能可见。
+- `temporal_stability`：可比较区域的帧间 alpha 变化。
+- `model_disagreement`：候选结果在重要区域中与其他候选差异的强度。
 
-The evaluator should produce:
+评估器输出：
 
 ```python
 @dataclass(frozen=True)
@@ -170,24 +170,24 @@ class CandidateQuality:
     signals: dict[str, float | int | str]
 ```
 
-Score direction must be consistent: higher is better. Risk signals can still be recorded separately.
+分数方向必须一致：越高越好。风险信号可以作为独立字段记录。
 
-### 4. Region-Level Selector
+### 4. 区域级选择器
 
-Add `src/matteflow/matte/quality_selector.py`.
+新增 `src/matteflow/matte/quality_selector.py`。
 
-The selector receives candidates, quality scores, and region ownership. It returns the selected alpha plus diagnostics.
+selector 接收 candidates、quality scores 和 region ownership，返回选中的 alpha 以及诊断信息。
 
-Selection principles:
+选择原则：
 
-- Subject core: prefer candidates with strong subject coverage and temporal stability.
-- Hair and uncertain edge: prefer candidates with better soft-edge continuity and less low-alpha collapse.
-- Transparent effects and luminous props: prefer candidates that preserve low-to-mid alpha instead of hard clipping.
-- Background residue: prefer candidates with lower alpha and lower spill risk.
-- SAM2-guided mask: use as a semantic constraint when available, not as a hard alpha replacement unless its quality score wins.
-- Existing traditional green/black matte remains a candidate, especially for green-screen base structure and black-background transparent effects.
+- 主体核心：优先选择主体覆盖强、时序稳定的候选。
+- 发丝和不确定边缘：优先选择软边连续性更好、低 alpha 坍缩更少的候选。
+- 透明特效和发光道具：优先选择能保留低到中等 alpha 的候选，避免硬裁剪。
+- 背景残留：优先选择 alpha 更低、spill 风险更低的候选。
+- SAM2-guided mask：可用时作为语义约束，不应直接作为硬 alpha 替换，除非它的质量分数胜出。
+- 现有 traditional green/black matte 继续作为候选，尤其用于绿幕基础结构和黑底透明特效。
 
-The selector must produce diagnostics:
+selector 必须输出诊断信息：
 
 ```python
 @dataclass(frozen=True)
@@ -199,11 +199,11 @@ class SelectionDecision:
     warnings: list[str]
 ```
 
-This should extend or reuse concepts from `FusionQualityGate` instead of duplicating unrelated fusion logic.
+这里应扩展或复用 `FusionQualityGate` 的概念，避免重复建设一套无关的融合逻辑。
 
-### 5. Pipeline Integration
+### 5. 流水线集成
 
-Add a config flag:
+新增配置字段：
 
 ```python
 quality_selection_enable: bool = False
@@ -211,39 +211,39 @@ quality_candidate_models: tuple[str, ...] = ("matanyone2", "sam2", "birefnet", "
 quality_selection_mode: str = "region"
 ```
 
-Initial rollout:
+初始上线方式：
 
-- Default remains current behavior.
-- When `quality_selection_enable=True`, `HybridMatte` delegates matte generation to a new `QualityDrivenMatte` coordinator. `HybridMatte` remains the public integration point for the pipeline, while `QualityDrivenMatte` owns candidate generation, evaluation, and selection.
-- The selected alpha sequence then continues through existing refine, despeckle, repair, temporal stabilization, decontamination, and encoding stages.
+- 默认保持当前行为。
+- 当 `quality_selection_enable=True` 时，`HybridMatte` 将 matte 生成委托给新的 `QualityDrivenMatte` 协调器。`HybridMatte` 仍作为 pipeline 的公开集成点，`QualityDrivenMatte` 负责候选生成、评估和选择。
+- 选中的 alpha 序列继续进入现有 refine、despeckle、repair、temporal stabilization、decontamination 和 encoding 阶段。
 
-This avoids destabilizing current CLI and GUI behavior while allowing targeted testing.
+这样可以避免影响当前 CLI 和 GUI 默认行为，同时允许定向测试新质量系统。
 
-### 6. Reporting
+### 6. 报告
 
-Extend the processing report with:
+扩展 processing report，增加：
 
-- Candidate model list and availability status.
-- Per-model runtime.
-- Per-model quality summary.
-- Per-region selected model counts.
-- Worst frames by each risk category.
-- Paths to optional debug artifacts.
+- 候选模型列表和可用性状态。
+- 各模型运行耗时。
+- 各模型质量摘要。
+- 各区域选中模型统计。
+- 各风险类别下最差帧。
+- 可选 debug 产物路径。
 
-Debug artifacts should include:
+debug 产物应包括：
 
-- Candidate alpha contact sheet.
-- Region selection overlay.
-- Alpha difference heatmaps between selected output and each candidate.
-- Local zoom sheets for high-risk regions.
+- 候选 alpha contact sheet。
+- 区域选择 overlay。
+- 最终选择结果与各候选之间的 alpha difference heatmap。
+- 高风险区域的局部放大对比图。
 
-The existing `output_debug` flag can control whether images are written. JSON summaries should be written even when image debug output is disabled.
+现有 `output_debug` 字段可以控制是否写出图片。即使图片 debug 输出关闭，也应写出 JSON 摘要。
 
-### 7. Regression Suite
+### 7. 回归套件
 
-Add a fixed difficult-sample regression workflow under the existing evaluation structure.
+在现有 evaluation 结构下增加固定困难样本回归工作流。
 
-Recommended layout:
+推荐目录结构：
 
 ```text
 tests/fixtures/matting_quality/
@@ -253,17 +253,17 @@ tests/fixtures/matting_quality/
   video_short/
 ```
 
-The manifest should define:
+manifest 应定义：
 
-- Input path
-- Background mode
-- Quality mode
-- Enabled candidates
-- Expected risk ceilings
-- Optional baseline report path
-- Optional regions of interest for zoom artifacts
+- 输入路径
+- 背景模式
+- 质量模式
+- 启用的候选模型
+- 预期风险上限
+- 可选 baseline report 路径
+- 可选 ROI，用于生成局部放大产物
 
-Regression outputs:
+回归输出：
 
 - `quality_summary.json`
 - `candidate_decisions.json`
@@ -271,88 +271,88 @@ Regression outputs:
 - `contact_sheet.png` when debug output is enabled
 - `diff_heatmaps/` when debug output is enabled
 
-Automated gates:
+自动化门禁：
 
-- No P0 risk category may regress beyond configured tolerance.
-- Background residue and hair-edge-loss risk must not exceed sample-specific ceilings.
-- Candidate selection must be deterministic for the same input and config.
-- Missing optional models should mark tests as skipped or degraded according to the manifest, not as unrelated failures.
+- 任一 P0 风险类别不得超过配置容忍度发生回退。
+- 背景残留和发丝边缘损失风险不得超过样本级上限。
+- 相同输入和配置下，候选选择必须是确定性的。
+- 可选模型缺失时，应根据 manifest 标记为 skipped 或 degraded，而不是变成无关失败。
 
-## Error Handling
+## 错误处理
 
-The quality system should distinguish these cases:
+质量系统应区分以下情况：
 
-- Requested model unavailable: fail fast with a clear model availability error.
-- Optional candidate unavailable: record skipped candidate and continue.
-- Candidate output shape mismatch: fail the quality selection stage.
-- Candidate alpha contains invalid values: sanitize if finite, fail if NaN or infinite values remain.
-- SAM2 guidance missing: skip SAM2-guided candidate in phase one and record the reason.
-- No AI candidate succeeds: fall back to existing traditional behavior and record degraded mode.
+- 用户指定的模型不可用：快速失败，并给出明确的模型可用性错误。
+- 可选候选模型不可用：记录 skipped candidate，并继续运行。
+- 候选输出 shape 不匹配：质量选择阶段失败。
+- 候选 alpha 包含非法值：有限值可清理；如果仍存在 NaN 或 infinite，则失败。
+- SAM2 引导信息缺失：第一阶段跳过 SAM2-guided candidate，并记录原因。
+- 没有 AI 候选成功：回退到现有传统行为，并记录 degraded mode。
 
-## Testing Strategy
+## 测试策略
 
-Unit tests:
+单元测试：
 
-- Candidate output normalization.
-- Quality evaluator score direction and signal extraction.
-- Selector behavior on synthetic subject, hair, transparent-effect, and background-residue masks.
-- Deterministic selection when candidates have equal scores.
-- Missing model handling.
+- 候选输出归一化。
+- 质量评估器的分数方向和信号提取。
+- selector 在合成 subject、hair、transparent-effect 和 background-residue mask 上的行为。
+- 候选分数相等时的确定性选择。
+- 缺失模型处理。
 
-Integration tests:
+集成测试：
 
-- Pipeline runs with `quality_selection_enable=False` and preserves existing behavior.
-- Pipeline runs with `quality_selection_enable=True` using fake candidate generators.
-- Processing report includes candidate decisions and quality summaries.
-- Regression evaluator flags threshold and baseline regressions.
+- `quality_selection_enable=False` 时 pipeline 保持现有行为。
+- `quality_selection_enable=True` 时 pipeline 可使用 fake candidate generators 跑通。
+- processing report 包含候选决策和质量摘要。
+- regression evaluator 能识别阈值回退和 baseline 回退。
 
-Visual/manual tests:
+视觉/人工测试：
 
-- Generate contact sheets for the current green-screen diagnostic sample.
-- Compare local zoom regions for model disagreement, soft-edge/hair, and residue/contamination.
+- 为当前绿幕诊断样本生成 contact sheets。
+- 对比模型分歧、软边/发丝、残留/污染区域的局部放大图。
 
-## Rollout Plan
+## 上线计划
 
-Phase 1: Infrastructure without changing default behavior
+阶段 1：基础设施，不改变默认行为
 
-- Add candidate contract.
-- Add fake or lightweight candidate tests.
-- Add quality evaluator and selector.
-- Add report schema extensions.
-- Keep `quality_selection_enable=False` by default.
+- 增加候选协议。
+- 增加 fake 或轻量候选测试。
+- 增加质量评估器和 selector。
+- 增加 report schema 扩展。
+- 保持 `quality_selection_enable=False` 为默认值。
 
-Phase 2: Real model wrappers
+阶段 2：真实模型 wrapper
 
-- Wrap MatAnyone2, BiRefNet, and traditional matte as candidates.
-- Add SAM2-guided candidate when guidance is provided.
-- Run quality selection on short samples.
+- 将 MatAnyone2、BiRefNet 和 traditional matte 包装为候选。
+- 在存在引导信息时增加 SAM2-guided candidate。
+- 在短样本上运行质量选择。
 
-Phase 3: Regression and GUI visibility
+阶段 3：回归与 GUI 可见性
 
-- Add difficult-sample manifest.
-- Generate contact sheets and local zoom artifacts.
-- Surface candidate decisions in the GUI report view.
+- 增加困难样本 manifest。
+- 生成 contact sheets 和局部放大产物。
+- 在 GUI report view 中展示候选决策。
 
-Phase 4: Quality tuning
+阶段 4：质量调优
 
-- Tune region scores against the difficult-sample set.
-- Decide whether MatAnyone2 should become the high-quality video default.
-- Decide whether a learned quality evaluator is justified by remaining failures.
+- 基于困难样本集调优区域分数。
+- 判断 MatAnyone2 是否应成为高质量视频默认路径。
+- 基于剩余失败情况判断是否需要 learned quality evaluator。
 
-## Open Decisions Resolved for This Spec
+## 本 Spec 已明确的决策
 
-- The first phase uses rule-based quality scoring, not a learned evaluator.
-- The new path is opt-in through configuration until regression evidence is strong.
-- SAM2 is guidance-first and should not be treated as a universal alpha generator without prompts.
-- Selection happens by region, not by whole frame.
-- Existing traditional matte remains a candidate, not a discarded fallback.
+- 第一阶段使用规则型质量评分，而不是 learned evaluator。
+- 在回归证据足够强之前，新路径通过配置显式开启。
+- SAM2 是 guidance-first，不应在没有 prompt 的情况下被当作通用 alpha 生成器。
+- 选择发生在区域级，而不是整帧级。
+- 现有 traditional matte 保持为候选，而不是被丢弃的 fallback。
 
-## Success Criteria
+## 成功标准
 
-The design is successful when:
+满足以下条件时，说明本设计成功：
 
-1. A single run can produce candidate outputs from MatAnyone2, BiRefNet, SAM2-guided mode when available, and traditional matte.
-2. The report explains which candidate won for subject, hair edge, transparent effect, uncertain edge, and background residue regions.
-3. A regression run can detect worse hair-edge loss, background residue, transparent-effect loss, or temporal instability before manual review.
-4. Debug artifacts make model disagreement and edge failures visible without rerunning ad hoc scripts.
-5. Current default behavior remains available while the quality system is validated.
+1. 单次运行可以在可用时产出 MatAnyone2、BiRefNet、SAM2-guided mode 和 traditional matte 的候选结果。
+2. 报告能解释 subject、hair edge、transparent effect、uncertain edge 和 background residue 区域分别由哪个候选胜出。
+3. 回归运行能在人工 review 之前发现更差的发丝边缘损失、背景残留、透明特效损失或时序不稳定。
+4. debug 产物能直接暴露模型分歧和边缘失败，不需要反复运行临时脚本。
+5. 在质量系统验证期间，当前默认行为仍然可用。
