@@ -1,13 +1,13 @@
+import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from matteflow import cli_app
+from matteflow import cli_app  # noqa: E402
 
 
 def test_main_runs_verify_preview_cleanup_subcommand(monkeypatch):
@@ -29,6 +29,15 @@ def test_build_parser_accepts_verify_preview_cleanup_subcommand():
     args = parser.parse_args(["verify-preview-cleanup"])
 
     assert args.command == "verify-preview-cleanup"
+
+
+def test_build_parser_accepts_quality_regression_subcommand():
+    parser = cli_app.build_parser()
+
+    args = parser.parse_args(["quality-regression", "--reports", "reports"])
+
+    assert args.command == "quality-regression"
+    assert args.reports == "reports"
 
 
 def test_build_parser_keeps_legacy_top_level_process_arguments():
@@ -63,6 +72,48 @@ def test_main_keeps_legacy_top_level_process_arguments(monkeypatch):
 
     assert cli_app.main(["--input", "sample.mp4"]) == 0
     assert captured["input_path"] == "sample.mp4"
+
+
+def test_main_runs_quality_regression_subcommand(tmp_path, monkeypatch):
+    report_dir = tmp_path / "reports" / "sample"
+    report_dir.mkdir(parents=True)
+    (report_dir / "processing_report.json").write_text(
+        json.dumps(
+            {
+                "job": {"input_path": "sample.png"},
+                "quality": {
+                    "overall_score": 0.70,
+                    "mean_edge_uncertainty": 0.10,
+                    "hole_pixels": 30,
+                    "background_residue": 0.02,
+                    "temporal_flicker": 0.01,
+                },
+                "regions": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    output_json = tmp_path / "quality_regression.json"
+    output_md = tmp_path / "quality_regression.md"
+    monkeypatch.setattr(cli_app, "_configure_logging", lambda debug: None)
+
+    exit_code = cli_app.main(
+        [
+            "quality-regression",
+            "--reports",
+            str(tmp_path / "reports"),
+            "--min-overall-score",
+            "0.80",
+            "--output-json",
+            str(output_json),
+            "--output-md",
+            str(output_md),
+        ]
+    )
+
+    assert exit_code == 1
+    assert json.loads(output_json.read_text(encoding="utf-8"))["summary"]["failed_count"] == 1
+    assert "sample" in output_md.read_text(encoding="utf-8")
 
 
 def test_module_entrypoint_runs_verify_preview_cleanup_subcommand():

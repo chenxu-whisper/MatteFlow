@@ -1,16 +1,21 @@
 """Shared MatteFlow CLI implementation."""
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
 
 from .config import BackgroundMode, MattingConfig, QualityMode
+from .evaluation import (
+    QualityRegressionBaseline,
+    QualityRegressionEvaluator,
+    QualityRegressionThresholds,
+)
 from .input.formats import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from .pipeline import MattingPipeline
 from .utils.output_paths import resolve_project_output_dir
 from .verify_preview_cleanup import main as verify_preview_cleanup_main
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 logger = logging.getLogger(__name__)
@@ -64,6 +69,20 @@ def _add_process_arguments(parser: argparse.ArgumentParser) -> None:
     parser.set_defaults(command="process")
 
 
+def _add_quality_regression_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--reports", required=True, help="包含 processing_report.json 的目录或单个报告文件")
+    parser.add_argument("--baseline", help="可选 baseline JSON 文件")
+    parser.add_argument("--output-json", help="写入聚合评测 JSON")
+    parser.add_argument("--output-md", help="写入 Markdown 评测报告")
+    parser.add_argument("--min-overall-score", type=float, default=0.80)
+    parser.add_argument("--max-mean-edge-uncertainty", type=float, default=0.08)
+    parser.add_argument("--max-hole-pixels", type=int, default=100)
+    parser.add_argument("--max-background-residue", type=float, default=0.02)
+    parser.add_argument("--max-temporal-flicker", type=float, default=0.08)
+    parser.add_argument("--max-score-drop", type=float, default=0.05)
+    parser.set_defaults(command="quality-regression")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="MatteFlow - High-quality video, sequence, and image matting"
@@ -75,6 +94,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="验证 Gradio 预览缓存的纯时间驱动清理逻辑",
     )
     verify_parser.set_defaults(command="verify-preview-cleanup")
+    quality_regression_parser = subparsers.add_parser(
+        "quality-regression",
+        help="聚合 processing_report.json 并执行质量回归检查",
+    )
+    _add_quality_regression_arguments(quality_regression_parser)
 
     _add_process_arguments(parser)
     return parser
@@ -102,6 +126,36 @@ def _build_config(args: argparse.Namespace) -> MattingConfig:
     return config
 
 
+def _run_quality_regression(args: argparse.Namespace) -> int:
+    baseline = QualityRegressionBaseline.from_path(args.baseline) if args.baseline else None
+    thresholds = QualityRegressionThresholds(
+        min_overall_score=args.min_overall_score,
+        max_mean_edge_uncertainty=args.max_mean_edge_uncertainty,
+        max_hole_pixels=args.max_hole_pixels,
+        max_background_residue=args.max_background_residue,
+        max_temporal_flicker=args.max_temporal_flicker,
+        max_score_drop=args.max_score_drop,
+    )
+    result = QualityRegressionEvaluator(thresholds=thresholds, baseline=baseline).evaluate_root(
+        args.reports
+    )
+
+    if args.output_json:
+        output_json = Path(args.output_json)
+        output_json.parent.mkdir(parents=True, exist_ok=True)
+        output_json.write_text(
+            json.dumps(result.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    if args.output_md:
+        output_md = Path(args.output_md)
+        output_md.parent.mkdir(parents=True, exist_ok=True)
+        output_md.write_text(result.to_markdown(), encoding="utf-8")
+
+    print(result.to_markdown(), end="")
+    return 0 if result.passed else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
@@ -110,6 +164,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "verify-preview-cleanup":
         return verify_preview_cleanup_main()
+    if args.command == "quality-regression":
+        _configure_logging(getattr(args, "debug", False))
+        return _run_quality_regression(args)
 
     if not args.input:
         parser.error("the following arguments are required: --input/-i")
