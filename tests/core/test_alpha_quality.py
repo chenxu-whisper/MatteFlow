@@ -6,7 +6,7 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from matteflow.analysis.alpha_quality import AlphaQualityAnalyzer
+from matteflow.analysis.alpha_quality import AlphaQualityAnalyzer  # noqa: E402
 
 
 def test_alpha_quality_reports_speckles_holes_uncertain_edges_and_temporal_flicker():

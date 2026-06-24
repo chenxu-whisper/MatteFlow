@@ -306,6 +306,7 @@ class MattingPipeline:
         timings["processing_report"] = 0.0
         try:
             stage_start = time.time()
+            timings["total"] = time.time() - start_time
             processing_report = self.report_builder.build(
                 input_path=input_path,
                 output_dir=output_dir,
@@ -321,6 +322,21 @@ class MattingPipeline:
             )
             processing_report_path = self.report_writer.write(processing_report, output_dir)
             timings["processing_report"] = time.time() - stage_start
+            timings["total"] = time.time() - start_time
+            processing_report = self.report_builder.build(
+                input_path=input_path,
+                output_dir=output_dir,
+                config=self.config,
+                frame_count=total_frames,
+                background_mode_effective=bg_mode,
+                timings=timings,
+                quality_report=quality_report,
+                region_context=decontaminate_context,
+                hybrid_matte=getattr(self, "hybrid_matte", None),
+                decontaminate_context=decontaminate_context,
+                artifacts=self._build_output_artifacts(output_dir),
+            )
+            processing_report_path = self.report_writer.write(processing_report, output_dir)
         except Exception:
             logger.exception("Failed to write processing report")
 

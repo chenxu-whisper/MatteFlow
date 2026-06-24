@@ -54,3 +54,5 @@ def test_pipeline_writes_processing_report_and_returns_path(monkeypatch, tmp_pat
     assert payload["quality"]["frame_count"] == 1
     assert payload["regions"]["subject_pixels"] >= 4
     assert payload["foreground_recovery"] == {}
+    assert payload["timings"]["total"] > 0.0
+    assert payload["timings"]["processing_report"] > 0.0

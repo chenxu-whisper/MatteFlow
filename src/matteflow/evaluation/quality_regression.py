@@ -179,22 +179,52 @@ class QualityRegressionEvaluator:
         return QualityRegressionRun(samples=samples, thresholds=self.thresholds)
 
     def evaluate_root(self, reports_root: Path | str) -> QualityRegressionRun:
-        return self.evaluate_paths(self.discover_reports(reports_root))
+        reports_root = Path(reports_root)
+        report_paths = self.discover_reports(reports_root)
+        if not report_paths:
+            return QualityRegressionRun(
+                samples=(
+                    self._failure_sample(
+                        reports_root / REPORT_FILENAME,
+                        "no processing_report.json files found",
+                    ),
+                ),
+                thresholds=self.thresholds,
+            )
+        return self.evaluate_paths(report_paths)
 
     def _evaluate_path(self, report_path: Path) -> QualityRegressionSampleResult:
-        payload = json.loads(report_path.read_text(encoding="utf-8"))
+        try:
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            return self._failure_sample(report_path, f"invalid processing report: {exc}")
         if not isinstance(payload, Mapping):
-            payload = {}
+            return self._failure_sample(report_path, "invalid processing report: top-level JSON must be an object")
         sample_name = _sample_name(report_path, payload)
-        metrics = _extract_metrics(payload)
-        baseline_metrics = dict(self.baseline.metrics_for(sample_name))
-        failures = self._build_failures(metrics, baseline_metrics)
+        try:
+            metrics = _extract_metrics(payload)
+            baseline_metrics = dict(self.baseline.metrics_for(sample_name))
+            failures = self._build_failures(metrics, baseline_metrics)
+        except (TypeError, ValueError) as exc:
+            return self._failure_sample(report_path, f"invalid processing report metrics: {exc}")
         return QualityRegressionSampleResult(
             sample_name=sample_name,
             report_path=report_path,
             metrics=metrics,
             baseline_metrics=baseline_metrics,
             failures=tuple(failures),
+        )
+
+    def _failure_sample(self, report_path: Path, failure: str) -> QualityRegressionSampleResult:
+        sample_name = _sample_name(report_path, {})
+        metrics = _extract_metrics({})
+        baseline_metrics = dict(self.baseline.metrics_for(sample_name))
+        return QualityRegressionSampleResult(
+            sample_name=sample_name,
+            report_path=report_path,
+            metrics=metrics,
+            baseline_metrics=baseline_metrics,
+            failures=(failure,),
         )
 
     def _build_failures(
@@ -270,14 +300,20 @@ def _float_metric(metrics: Mapping[str, Any], key: str) -> float:
     value = metrics.get(key)
     if value is None:
         return 0.0
-    return float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _int_metric(metrics: Mapping[str, Any], key: str) -> int:
     value = metrics.get(key)
     if value is None:
         return 0
-    return int(value)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _is_number(value: Any) -> bool:

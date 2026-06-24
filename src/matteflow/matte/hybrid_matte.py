@@ -1,12 +1,13 @@
-"""混合抠图引擎 - AI + 传统算法融合"""
-
-import logging
 import inspect
-import numpy as np
-import cv2
+import logging
 from typing import List
 
-from ..config import MattingConfig, BackgroundMode
+import cv2
+import numpy as np
+
+from ..analysis.region_ownership import RegionOwnership
+from ..config import BackgroundMode, MattingConfig
+from .fusion_quality_gate import FusionCandidate, FusionQualityGate
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,8 @@ class HybridMatte:
         self.last_active_ai_model = None
         self.last_fallback_quality_metrics = None
         self.last_green_screen_layer_debug = None
+        self.last_fusion_quality_gate_diagnostics = None
+        self.fusion_quality_gate = FusionQualityGate()
         self.rvm = None
         self.birefnet = None
         self.rmbg = None
@@ -61,8 +64,9 @@ class HybridMatte:
             logger.info("AI disabled, using traditional algorithms only")
         
         # 传统算法备用
-        from .green_screen_matte import GreenScreenMatte
         from .black_background_matte import BlackBackgroundMatte
+        from .green_screen_matte import GreenScreenMatte
+
         self.green_matte = GreenScreenMatte(config)
         self.black_matte = BlackBackgroundMatte(config)
     
@@ -244,8 +248,9 @@ class HybridMatte:
             logger.warning("RVM not available for auto selection: %s", e)
         
         # 传统算法备用（始终加载）
-        from .green_screen_matte import GreenScreenMatte
         from .black_background_matte import BlackBackgroundMatte
+        from .green_screen_matte import GreenScreenMatte
+
         self.green_matte = GreenScreenMatte(config)
         self.black_matte = BlackBackgroundMatte(config)
     
@@ -592,7 +597,10 @@ class HybridMatte:
         use_competitive_composer = self.last_active_ai_model == "gvm"
         composer = None
         if use_competitive_composer:
-            from .green_screen_layer_composer import GreenScreenCompetitiveLayerComposer, LayerCandidate
+            from .green_screen_layer_composer import (
+                GreenScreenCompetitiveLayerComposer,
+                LayerCandidate,
+            )
 
             composer = GreenScreenCompetitiveLayerComposer()
 
@@ -720,6 +728,20 @@ class HybridMatte:
                     debug_layers["subject_alpha_out"],
                 ).astype(np.float32, copy=False)
                 self.last_green_screen_layer_debug = debug_layers
+                fused_alpha = self._apply_green_screen_fusion_quality_gate(
+                    fused_alpha=fused_alpha,
+                    base_alpha=base_alpha,
+                    ai_alpha=ai_alpha,
+                    solid_alpha=solid_alpha,
+                    effect_alpha=effect_alpha,
+                    subject_confidence=subject_confidence,
+                    subject_competitive_confidence=subject_competitive_confidence,
+                    effect_competitive_confidence=effect_competitive_confidence,
+                    background_evidence=background_evidence,
+                    layer_ownership=composed.ownership,
+                    frame=frame,
+                )
+                self.last_green_screen_layer_debug["final_alpha"] = fused_alpha
             else:
                 fused_alpha = self._soft_fuse_layers(solid_alpha, effect_alpha)
             self._log_transparency_fusion_stats("green_screen", solid_alpha, effect_alpha, fused_alpha)
@@ -774,6 +796,66 @@ class HybridMatte:
             return final_alpha.astype(np.float32, copy=False)
         solidified = np.where(core, 1.0, final_alpha)
         return np.clip(solidified, 0.0, 1.0).astype(np.float32, copy=False)
+
+    def _apply_green_screen_fusion_quality_gate(
+        self,
+        *,
+        fused_alpha: np.ndarray,
+        base_alpha: np.ndarray,
+        ai_alpha: np.ndarray,
+        solid_alpha: np.ndarray,
+        effect_alpha: np.ndarray,
+        subject_confidence: np.ndarray,
+        subject_competitive_confidence: np.ndarray,
+        effect_competitive_confidence: np.ndarray,
+        background_evidence: np.ndarray,
+        layer_ownership,
+        frame: np.ndarray | None,
+    ) -> np.ndarray:
+        """Run the P2 region quality gate inside the actual GVM green-screen merge path."""
+        ownership = RegionOwnership(
+            subject=np.asarray(layer_ownership.subject >= 0.5, dtype=bool),
+            hair_edge=self._fusion_quality_gate_hair_edge(fused_alpha, layer_ownership),
+            luminous_prop=self._fusion_quality_gate_luminous_prop(base_alpha, frame),
+            transparent_effect=np.asarray(layer_ownership.effect >= 0.5, dtype=bool),
+            background_residue=np.asarray(layer_ownership.background >= 0.5, dtype=bool),
+            uncertain_edge=self._fusion_quality_gate_uncertain_edge(fused_alpha, layer_ownership),
+        )
+        confidence = np.clip(
+            np.maximum.reduce(
+                [
+                    subject_competitive_confidence,
+                    effect_competitive_confidence,
+                    1.0 - background_evidence,
+                ]
+            ),
+            0.0,
+            1.0,
+        )
+        result = self.fusion_quality_gate.fuse(
+            [
+                FusionCandidate("competitive_composer", fused_alpha, confidence),
+            ],
+            ownership,
+        )
+        self.last_fusion_quality_gate_diagnostics = dict(result.diagnostics)
+        return np.clip(result.alpha, 0.0, 1.0).astype(np.float32, copy=False)
+
+    @staticmethod
+    def _fusion_quality_gate_hair_edge(fused_alpha: np.ndarray, layer_ownership) -> np.ndarray:
+        soft_alpha = (fused_alpha > 0.05) & (fused_alpha < 0.95)
+        owned = (layer_ownership.subject >= 0.5) | (layer_ownership.effect >= 0.5) | (layer_ownership.background >= 0.5)
+        return np.asarray(soft_alpha & (~owned), dtype=bool)
+
+    def _fusion_quality_gate_luminous_prop(self, base_alpha: np.ndarray, frame: np.ndarray | None) -> np.ndarray:
+        if frame is None:
+            return np.zeros_like(base_alpha, dtype=bool)
+        return np.asarray(self._green_screen_warm_luminous_prop_layer(base_alpha, frame) >= 0.5, dtype=bool)
+
+    @staticmethod
+    def _fusion_quality_gate_uncertain_edge(fused_alpha: np.ndarray, layer_ownership) -> np.ndarray:
+        owned = (layer_ownership.subject >= 0.5) | (layer_ownership.effect >= 0.5) | (layer_ownership.background >= 0.5)
+        return np.asarray((fused_alpha > 0.02) & (fused_alpha < 0.98) & (~owned), dtype=bool)
 
     def _log_transparency_fusion_stats(
         self,

@@ -6,10 +6,10 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from matteflow.analysis.region_ownership import RegionOwnership
-from matteflow.config import BackgroundMode, MattingConfig
-from matteflow.refine.color_decontaminate import ColorDecontaminate
-from matteflow.refine.foreground_color_recovery import ForegroundColorRecovery
+from matteflow.analysis.region_ownership import RegionOwnership  # noqa: E402
+from matteflow.config import BackgroundMode, MattingConfig  # noqa: E402
+from matteflow.refine.color_decontaminate import ColorDecontaminate  # noqa: E402
+from matteflow.refine.foreground_color_recovery import ForegroundColorRecovery  # noqa: E402
 
 
 def _blank_ownership(shape, **overrides):

@@ -7,10 +7,10 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from matteflow.errors import ProgressCallbackError
-from matteflow.config import BackgroundMode, MattingConfig
-from matteflow.matte.hybrid_matte import HybridMatte
-from matteflow.refine.color_decontaminate import ColorDecontaminate
+from matteflow.config import BackgroundMode, MattingConfig  # noqa: E402
+from matteflow.errors import ProgressCallbackError  # noqa: E402
+from matteflow.matte.hybrid_matte import HybridMatte  # noqa: E402
+from matteflow.refine.color_decontaminate import ColorDecontaminate  # noqa: E402
 
 
 def _load_rgb_video_crop(
@@ -1572,6 +1572,45 @@ def test_green_screen_sequence_falls_back_with_partial_broad_support_when_gvm_st
 
     assert matte.last_active_ai_model == "corridorkey"
     assert min(float(alpha.max()) for alpha in result) >= 0.80
+
+
+def test_gvm_green_screen_fusion_runs_quality_gate_in_real_merge_path():
+    class RecordingQualityGate:
+        def __init__(self):
+            self.calls = []
+
+        def fuse(self, candidates, ownership):
+            candidates = list(candidates)
+            self.calls.append((candidates, ownership))
+            return type(
+                "FusionResult",
+                (),
+                {
+                    "alpha": candidates[0].alpha,
+                    "diagnostics": {
+                        "candidate_count": len(candidates),
+                        "selected_by_region": {"subject": candidates[0].name},
+                        "rejected_takeovers": {},
+                    },
+                },
+            )()
+
+    matte = HybridMatte(MattingConfig(use_ai=False, transparency_preserve=1.0))
+    matte.last_active_ai_model = "gvm"
+    gate = RecordingQualityGate()
+    matte.fusion_quality_gate = gate
+    frame = np.array([[[220, 160, 90], [0, 220, 40], [180, 180, 180]]], dtype=np.uint8)
+    base_alpha = np.array([[0.95, 0.02, 0.40]], dtype=np.float32)
+    ai_alpha = np.array([[0.90, 0.70, 0.20]], dtype=np.float32)
+
+    merged = matte._merge_green_screen_effects([base_alpha], [ai_alpha], [frame])[0]
+
+    assert gate.calls
+    candidates, ownership = gate.calls[0]
+    assert [candidate.name for candidate in candidates] == ["competitive_composer"]
+    assert ownership.subject.shape == base_alpha.shape
+    assert merged.shape == base_alpha.shape
+    assert matte.last_fusion_quality_gate_diagnostics["candidate_count"] == len(candidates)
 
 
 def _configure_region_weighted_quality_gate_masks(matte: HybridMatte) -> None:

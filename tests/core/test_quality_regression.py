@@ -105,3 +105,31 @@ def test_quality_regression_evaluator_discovers_processing_reports(tmp_path):
     discovered = QualityRegressionEvaluator.discover_reports(tmp_path)
 
     assert discovered == [report_path]
+
+
+def test_quality_regression_evaluator_isolates_invalid_report_failures(tmp_path):
+    valid_report = _write_report(
+        tmp_path / "valid" / "processing_report.json",
+        _processing_report("valid", overall_score=0.91),
+    )
+    invalid_report = tmp_path / "broken" / "processing_report.json"
+    invalid_report.parent.mkdir(parents=True, exist_ok=True)
+    invalid_report.write_text("{not-json", encoding="utf-8")
+
+    result = QualityRegressionEvaluator().evaluate_paths([valid_report, invalid_report])
+
+    assert result.total_count == 2
+    assert result.passed_count == 1
+    assert result.failed_count == 1
+    broken = result.samples_by_name["broken"]
+    assert broken.passed is False
+    assert any("invalid processing report" in failure for failure in broken.failures)
+
+
+def test_quality_regression_evaluator_fails_empty_report_roots(tmp_path):
+    result = QualityRegressionEvaluator().evaluate_root(tmp_path)
+
+    assert result.total_count == 1
+    assert result.failed_count == 1
+    assert result.samples[0].sample_name == tmp_path.name
+    assert any("no processing_report.json files found" in failure for failure in result.samples[0].failures)
