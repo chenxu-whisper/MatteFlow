@@ -10,6 +10,7 @@ import numpy as np
 
 from .analysis.alpha_quality import AlphaQualityAnalyzer
 from .analysis.background_analyzer import BackgroundAnalyzer
+from .analysis.p0_quality import P0QualityAnalyzer
 from .analysis.region_ownership import RegionOwnershipAnalyzer
 from .config import BackgroundMode, MattingConfig, QualityMode
 from .errors import InputValidationError, JobCancelledError, ProgressCallbackError
@@ -34,6 +35,7 @@ class MattingPipeline:
         self.config = config or MattingConfig()
         self.analyzer = BackgroundAnalyzer()
         self.quality_analyzer = AlphaQualityAnalyzer()
+        self.p0_quality_analyzer = P0QualityAnalyzer()
         self.region_analyzer = RegionOwnershipAnalyzer()
         self.fusion = MatteFusion()
         self.refiner = EdgeRefiner(self.config)
@@ -170,6 +172,7 @@ class MattingPipeline:
         else:
             alphas = self._generate_matte(frames, bg_mode, progress_callback)
         self._assert_frame_alpha_alignment("matte", frames, alphas)
+        base_alphas = [alpha.copy() for alpha in alphas]
         timings["matte"] = time.time() - stage_start
         self._check_cancelled(cancel_check)
 
@@ -180,7 +183,7 @@ class MattingPipeline:
             self._check_cancelled(cancel_check)
             stage_start = time.time()
             alphas_before_refine = [alpha.copy() for alpha in alphas]
-            region_context = self._build_region_context(frames, alphas)
+            region_context = self._build_region_context(frames, alphas, base_alphas=base_alphas)
             alphas = self._call_with_optional_context(
                 self.refiner.refine,
                 frames,
@@ -204,7 +207,7 @@ class MattingPipeline:
             despeckle_context = {
                 "active_ai_model": getattr(getattr(self, "hybrid_matte", None), "last_active_ai_model", None),
             }
-            despeckle_context.update(self._build_region_context(frames, alphas))
+            despeckle_context.update(self._build_region_context(frames, alphas, base_alphas=base_alphas))
             alphas = self._call_with_optional_context(
                 self.despeckle.process,
                 alphas,
@@ -225,7 +228,7 @@ class MattingPipeline:
             alphas_before_effect_repair = [alpha.copy() for alpha in alphas]
             repair_bg_mode = self._effective_decontamination_mode(bg_mode)
             active_model = getattr(getattr(self, "hybrid_matte", None), "last_active_ai_model", None)
-            repair_context = self._build_region_context(frames, alphas)
+            repair_context = self._build_region_context(frames, alphas, base_alphas=base_alphas)
             alphas = self._call_with_optional_context(
                 self.effect_prop_repair.process,
                 frames,
@@ -272,7 +275,7 @@ class MattingPipeline:
         self._check_cancelled(cancel_check)
         stage_start = time.time()
         decontaminate_bg_mode = self._effective_decontamination_mode(bg_mode)
-        decontaminate_context = self._build_region_context(frames, alphas)
+        decontaminate_context = self._build_region_context(frames, alphas, base_alphas=base_alphas)
         decontaminate_context["active_ai_model"] = getattr(
             getattr(self, "hybrid_matte", None),
             "last_active_ai_model",
@@ -289,6 +292,15 @@ class MattingPipeline:
         self._assert_frame_alpha_alignment("decontaminate", frames, alphas)
         timings["decontaminate"] = time.time() - stage_start
         self._check_cancelled(cancel_check)
+
+        stage_start = time.time()
+        p0_quality_report = self.p0_quality_analyzer.analyze_sequence(
+            frames,
+            alphas,
+            quality_report=quality_report,
+            region_context=decontaminate_context,
+        )
+        timings["p0_quality_report"] = time.time() - stage_start
 
         # 7. RGBA 合成与输出
         self._notify(progress_callback, 85, 100, "encoding")
@@ -315,6 +327,7 @@ class MattingPipeline:
                 background_mode_effective=bg_mode,
                 timings=timings,
                 quality_report=quality_report,
+                p0_quality_report=p0_quality_report,
                 region_context=decontaminate_context,
                 hybrid_matte=getattr(self, "hybrid_matte", None),
                 decontaminate_context=decontaminate_context,
@@ -331,6 +344,7 @@ class MattingPipeline:
                 background_mode_effective=bg_mode,
                 timings=timings,
                 quality_report=quality_report,
+                p0_quality_report=p0_quality_report,
                 region_context=decontaminate_context,
                 hybrid_matte=getattr(self, "hybrid_matte", None),
                 decontaminate_context=decontaminate_context,

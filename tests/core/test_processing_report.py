@@ -9,6 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from matteflow.analysis.alpha_quality import AlphaQualityReport  # noqa: E402
+from matteflow.analysis.p0_quality import P0QualityAnalyzer  # noqa: E402
 from matteflow.analysis.region_ownership import RegionOwnership  # noqa: E402
 from matteflow.config import BackgroundMode, MattingConfig, QualityMode  # noqa: E402
 from matteflow.reporting import ProcessingReportBuilder, ProcessingReportWriter  # noqa: E402
@@ -37,6 +38,12 @@ def test_builder_creates_required_sections_and_serializable_values(tmp_path):
         background_residue=np.array([[False, False], [False, True]]),
         uncertain_edge=np.array([[True, True], [False, False]]),
     )
+    p0_quality_report = P0QualityAnalyzer().analyze_sequence(
+        [np.full((2, 2, 3), 230, dtype=np.uint8)],
+        [np.full((2, 2), 0.1, dtype=np.float32)],
+        quality_report=quality_report,
+        region_context={"region_ownership": [ownership]},
+    )
     hybrid_matte = SimpleNamespace(
         last_active_ai_model="gvm",
         last_fallback_quality_metrics={"weighted_score": np.float32(0.82)},
@@ -64,6 +71,7 @@ def test_builder_creates_required_sections_and_serializable_values(tmp_path):
         background_mode_effective=BackgroundMode.GREEN_SCREEN,
         timings={"decode": np.float32(0.1), "total": np.float64(1.2)},
         quality_report=quality_report,
+        p0_quality_report=p0_quality_report,
         region_context={"region_ownership": [ownership]},
         hybrid_matte=hybrid_matte,
         decontaminate_context=decontaminate_context,
@@ -76,6 +84,7 @@ def test_builder_creates_required_sections_and_serializable_values(tmp_path):
         "job",
         "timings",
         "quality",
+        "p0_risks",
         "regions",
         "model_decisions",
         "fusion",
@@ -89,6 +98,8 @@ def test_builder_creates_required_sections_and_serializable_values(tmp_path):
     assert payload["job"]["quality_mode"] == "high"
     assert payload["job"]["ai_model_active"] == "gvm"
     assert payload["quality"]["speckle_pixels"] == 3
+    assert payload["p0_risks"]["light_subject_loss"]["level"] == "fail"
+    assert payload["p0_risks"]["background_residue"]["signals"]["quality_background_residue"] == 0.01
     assert payload["regions"]["subject_pixels"] == 3
     assert payload["regions"]["transparent_effect_pixels"] == 2
     assert payload["model_decisions"]["fallback_quality_metrics"]["weighted_score"] == 0.82
@@ -157,6 +168,15 @@ def test_builder_handles_missing_optional_diagnostics(tmp_path):
         "background_residue": None,
         "temporal_flicker": None,
     }
+    assert set(payload["p0_risks"]) == {
+        "hair_edge_loss",
+        "background_residue",
+        "light_subject_loss",
+        "transparent_effect_loss",
+        "temporal_instability",
+        "subject_misidentification",
+    }
+    assert payload["p0_risks"]["hair_edge_loss"]["level"] == "pass"
     assert payload["regions"] == {
         "subject_pixels": 0,
         "hair_edge_pixels": 0,

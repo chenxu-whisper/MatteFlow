@@ -20,6 +20,7 @@ class QualityRegressionThresholds:
     max_background_residue: float = 0.02
     max_temporal_flicker: float = 0.08
     max_score_drop: float = 0.05
+    max_p0_risk_score_increase: float = 0.20
 
 
 @dataclass(frozen=True)
@@ -126,6 +127,7 @@ class QualityRegressionRun:
                 "max_background_residue": self.thresholds.max_background_residue,
                 "max_temporal_flicker": self.thresholds.max_temporal_flicker,
                 "max_score_drop": self.thresholds.max_score_drop,
+                "max_p0_risk_score_increase": self.thresholds.max_p0_risk_score_increase,
             },
             "samples": [sample.to_dict() for sample in self.samples],
         }
@@ -268,6 +270,38 @@ class QualityRegressionEvaluator:
                     "overall_score dropped "
                     f"{score_drop:.3f} from baseline {float(baseline_score):.3f}"
                 )
+        failures.extend(self._build_p0_failures(metrics, baseline_metrics))
+        return failures
+
+    def _build_p0_failures(
+        self,
+        metrics: Mapping[str, Any],
+        baseline_metrics: Mapping[str, Any],
+    ) -> list[str]:
+        failures: list[str] = []
+        for key, value in metrics.items():
+            if not key.startswith("p0_risk.") or not key.endswith(".level"):
+                continue
+            risk_name = key[len("p0_risk.") : -len(".level")]
+            if str(value) == "fail":
+                failures.append(f"p0 {risk_name} level fail")
+
+        for key, value in metrics.items():
+            if not key.startswith("p0_risk.") or not key.endswith(".score"):
+                continue
+            baseline_value = baseline_metrics.get(key)
+            if not _is_number(baseline_value):
+                continue
+            increase = float(value) - float(baseline_value)
+            if increase > self.thresholds.max_p0_risk_score_increase:
+                risk_name = key[len("p0_risk.") : -len(".score")]
+                failures.append(
+                    "p0 {risk_name} risk increased {increase:.3f} from baseline {baseline:.3f}".format(
+                        risk_name=risk_name,
+                        increase=increase,
+                        baseline=float(baseline_value),
+                    )
+                )
         return failures
 
 
@@ -286,7 +320,7 @@ def _extract_metrics(payload: Mapping[str, Any]) -> dict[str, Any]:
     quality = payload.get("quality")
     if not isinstance(quality, Mapping):
         quality = {}
-    return {
+    metrics: dict[str, Any] = {
         "overall_score": _float_metric(quality, "overall_score"),
         "mean_edge_uncertainty": _float_metric(quality, "mean_edge_uncertainty"),
         "speckle_pixels": _int_metric(quality, "speckle_pixels"),
@@ -294,6 +328,15 @@ def _extract_metrics(payload: Mapping[str, Any]) -> dict[str, Any]:
         "background_residue": _float_metric(quality, "background_residue"),
         "temporal_flicker": _float_metric(quality, "temporal_flicker"),
     }
+    p0_risks = payload.get("p0_risks")
+    if isinstance(p0_risks, Mapping):
+        for risk_name, risk_payload in p0_risks.items():
+            if not isinstance(risk_payload, Mapping):
+                continue
+            metric_prefix = f"p0_risk.{risk_name}"
+            metrics[f"{metric_prefix}.score"] = _float_metric(risk_payload, "score")
+            metrics[f"{metric_prefix}.level"] = str(risk_payload.get("level", "pass"))
+    return metrics
 
 
 def _float_metric(metrics: Mapping[str, Any], key: str) -> float:

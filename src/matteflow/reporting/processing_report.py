@@ -23,6 +23,7 @@ class ProcessingReport:
     job: dict[str, Any]
     timings: dict[str, float]
     quality: dict[str, Any]
+    p0_risks: dict[str, Any]
     regions: dict[str, int]
     model_decisions: dict[str, Any]
     fusion: dict[str, Any]
@@ -37,6 +38,7 @@ class ProcessingReport:
             "job": _json_safe(self.job),
             "timings": _json_safe(self.timings),
             "quality": _json_safe(self.quality),
+            "p0_risks": _json_safe(self.p0_risks),
             "regions": _json_safe(self.regions),
             "model_decisions": _json_safe(self.model_decisions),
             "fusion": _json_safe(self.fusion),
@@ -68,10 +70,11 @@ class ProcessingReportBuilder:
         background_mode_effective: BackgroundMode,
         timings: Mapping[str, float] | None,
         quality_report: Any | None,
-        region_context: Mapping[str, Any] | None,
-        hybrid_matte: Any | None,
-        decontaminate_context: Mapping[str, Any] | None,
-        artifacts: Mapping[str, Any],
+        p0_quality_report: Any | None = None,
+        region_context: Mapping[str, Any] | None = None,
+        hybrid_matte: Any | None = None,
+        decontaminate_context: Mapping[str, Any] | None = None,
+        artifacts: Mapping[str, Any] | None = None,
     ) -> ProcessingReport:
         output_dir = Path(output_dir)
         decontaminate_context = decontaminate_context or {}
@@ -91,11 +94,12 @@ class ProcessingReportBuilder:
             },
             timings=self._build_timings(timings),
             quality=self._build_quality(quality_report, frame_count),
+            p0_risks=self._build_p0_risks(p0_quality_report),
             regions=self._build_regions(region_context),
             model_decisions=self._build_model_decisions(hybrid_matte),
             fusion=self._build_fusion(decontaminate_context),
             foreground_recovery=self._build_foreground_recovery(decontaminate_context),
-            artifacts=self._build_artifacts(artifacts, output_dir),
+            artifacts=self._build_artifacts(artifacts or {}, output_dir),
             warnings=[],
         )
 
@@ -131,6 +135,15 @@ class ProcessingReportBuilder:
             ),
             "temporal_flicker": _optional_float(getattr(quality_report, "temporal_flicker", None)),
         }
+
+    @staticmethod
+    def _build_p0_risks(p0_quality_report: Any | None) -> dict[str, Any]:
+        if p0_quality_report is not None and hasattr(p0_quality_report, "to_dict"):
+            return p0_quality_report.to_dict()
+
+        from ..analysis.p0_quality import P0QualityAnalyzer
+
+        return P0QualityAnalyzer().analyze_sequence([], []).to_dict()
 
     def _build_regions(self, region_context: Mapping[str, Any] | None) -> dict[str, int]:
         counts = {f"{field}_pixels": 0 for field in self.REGION_FIELDS}
