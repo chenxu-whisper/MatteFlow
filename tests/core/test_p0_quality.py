@@ -8,7 +8,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from matteflow.analysis.alpha_quality import AlphaQualityReport  # noqa: E402
 from matteflow.analysis.p0_quality import P0QualityAnalyzer  # noqa: E402
-from matteflow.analysis.region_ownership import RegionOwnership  # noqa: E402
+from matteflow.analysis.region_ownership import RegionOwnership, RegionOwnershipAnalyzer  # noqa: E402
 
 
 def _quality_report(**overrides):
@@ -70,6 +70,16 @@ def test_p0_quality_flags_background_residue_from_quality_and_region_evidence():
     assert risk["score"] >= 0.8
     assert risk["signals"]["quality_background_residue"] == 0.08
     assert risk["signals"]["region_background_residue_ratio"] == 0.25
+
+
+def test_region_ownership_does_not_mark_high_alpha_white_subject_as_background_residue():
+    frame = np.full((32, 32, 3), [232, 235, 242], dtype=np.uint8)
+    alpha = np.ones((32, 32), dtype=np.float32)
+
+    ownership = RegionOwnershipAnalyzer().analyze(frame, alpha, alpha)
+
+    assert not np.any(ownership.background_residue)
+    assert np.all(ownership.subject)
 
 
 def test_p0_quality_flags_light_subject_loss_from_bright_low_saturation_pixels():

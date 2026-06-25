@@ -27,6 +27,7 @@ class ProcessingReport:
     regions: dict[str, int]
     model_decisions: dict[str, Any]
     fusion: dict[str, Any]
+    quality_selection: dict[str, Any]
     foreground_recovery: dict[str, Any]
     artifacts: dict[str, Any]
     warnings: list[str]
@@ -42,6 +43,7 @@ class ProcessingReport:
             "regions": _json_safe(self.regions),
             "model_decisions": _json_safe(self.model_decisions),
             "fusion": _json_safe(self.fusion),
+            "quality_selection": _json_safe(self.quality_selection),
             "foreground_recovery": _json_safe(self.foreground_recovery),
             "artifacts": _json_safe(self.artifacts),
             "warnings": _json_safe(self.warnings),
@@ -98,6 +100,7 @@ class ProcessingReportBuilder:
             regions=self._build_regions(region_context),
             model_decisions=self._build_model_decisions(hybrid_matte),
             fusion=self._build_fusion(decontaminate_context),
+            quality_selection=self._build_quality_selection(hybrid_matte),
             foreground_recovery=self._build_foreground_recovery(decontaminate_context),
             artifacts=self._build_artifacts(artifacts or {}, output_dir),
             warnings=[],
@@ -184,6 +187,23 @@ class ProcessingReportBuilder:
             "selected_by_region": _json_safe(fusion.get("selected_by_region", {})),
             "rejected_takeovers": _json_safe(fusion.get("rejected_takeovers", {})),
         }
+
+    @staticmethod
+    def _build_quality_selection(hybrid_matte: Any | None) -> dict[str, Any]:
+        selection = (
+            getattr(hybrid_matte, "last_quality_selection", None)
+            if hybrid_matte is not None
+            else None
+        )
+        if not selection:
+            return {
+                "available": False,
+                "candidate_count": 0,
+                "selected_model_counts": {},
+                "candidate_quality": {},
+                "skipped_candidates": [],
+            }
+        return _json_safe(dict(selection))
 
     @staticmethod
     def _build_foreground_recovery(decontaminate_context: Mapping[str, Any]) -> dict[str, Any]:

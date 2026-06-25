@@ -66,6 +66,11 @@ def _add_process_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--mask", action="store_true", help="输出黑白遮罩")
     parser.add_argument("--debug", action="store_true", help="输出调试信息")
+    parser.add_argument(
+        "--quality-selection",
+        action="store_true",
+        help="启用实验性候选质量选择系统",
+    )
     parser.set_defaults(command="process")
 
 
@@ -123,6 +128,7 @@ def _build_config(args: argparse.Namespace) -> MattingConfig:
 
     config.output_mask = args.mask
     config.output_debug = args.debug
+    config.quality_selection_enable = bool(getattr(args, "quality_selection", False))
     return config
 
 

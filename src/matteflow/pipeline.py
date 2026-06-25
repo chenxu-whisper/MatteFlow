@@ -1,6 +1,7 @@
 """MatteFlow 主 Pipeline"""
 
 import inspect
+import json
 import logging
 import time
 from pathlib import Path
@@ -318,6 +319,7 @@ class MattingPipeline:
         timings["processing_report"] = 0.0
         try:
             stage_start = time.time()
+            quality_selection_artifacts = self._write_quality_selection_debug_outputs(output_dir)
             timings["total"] = time.time() - start_time
             processing_report = self.report_builder.build(
                 input_path=input_path,
@@ -331,7 +333,7 @@ class MattingPipeline:
                 region_context=decontaminate_context,
                 hybrid_matte=getattr(self, "hybrid_matte", None),
                 decontaminate_context=decontaminate_context,
-                artifacts=self._build_output_artifacts(output_dir),
+                artifacts=self._build_output_artifacts(output_dir, quality_selection_artifacts),
             )
             processing_report_path = self.report_writer.write(processing_report, output_dir)
             timings["processing_report"] = time.time() - stage_start
@@ -348,7 +350,7 @@ class MattingPipeline:
                 region_context=decontaminate_context,
                 hybrid_matte=getattr(self, "hybrid_matte", None),
                 decontaminate_context=decontaminate_context,
-                artifacts=self._build_output_artifacts(output_dir),
+                artifacts=self._build_output_artifacts(output_dir, quality_selection_artifacts),
             )
             processing_report_path = self.report_writer.write(processing_report, output_dir)
         except Exception:
@@ -480,7 +482,61 @@ class MattingPipeline:
         )
         return report
 
-    def _build_output_artifacts(self, output_dir: Path) -> dict:
+    def _write_quality_selection_debug_outputs(self, output_dir: Path) -> dict:
+        if not getattr(self.config, "output_debug", False):
+            return {}
+        selection = getattr(getattr(self, "hybrid_matte", None), "last_quality_selection", None)
+        if not selection:
+            return {}
+
+        output_dir = Path(output_dir)
+        debug_dir = output_dir / "debug" / "quality_selection"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = debug_dir / "quality_selection_summary.json"
+        summary_path.write_text(
+            json.dumps(selection, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        contact_sheet_path = debug_dir / "quality_selection_contact_sheet.png"
+        self._write_quality_selection_contact_sheet(contact_sheet_path, selection)
+        return {
+            "quality_selection_debug_dir": debug_dir,
+            "quality_selection_contact_sheet": contact_sheet_path,
+        }
+
+    def _write_quality_selection_contact_sheet(self, output_path: Path, selection: dict) -> None:
+        sheet = np.full((160, 480, 3), 255, dtype=np.uint8)
+        lines = [
+            "Quality selection",
+            f"available={selection.get('available')}",
+            f"candidate_count={selection.get('candidate_count')}",
+        ]
+        selected_counts = selection.get("selected_model_counts") or {}
+        if selected_counts:
+            lines.append(
+                "selected=" + ", ".join(f"{key}:{value}" for key, value in selected_counts.items())
+            )
+        skipped = selection.get("skipped_candidates") or []
+        if skipped:
+            lines.append("skipped=" + ", ".join(str(item.get("name")) for item in skipped[:3]))
+
+        import cv2
+
+        for index, line in enumerate(lines[:6]):
+            cv2.putText(
+                sheet,
+                str(line),
+                (12, 26 + index * 22),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (20, 20, 20),
+                1,
+                cv2.LINE_AA,
+            )
+        self.encoder.encode_image(sheet, output_path)
+
+    def _build_output_artifacts(self, output_dir: Path, quality_selection_artifacts: dict | None = None) -> dict:
         """Describe output artifact locations without requiring every toggle to be enabled."""
         output_dir = Path(output_dir)
         artifacts = {}
@@ -496,6 +552,7 @@ class MattingPipeline:
             artifacts["mask_dir"] = output_dir / "mask"
         if getattr(self.config, "output_debug", False):
             artifacts["debug_dir"] = output_dir / "debug"
+        artifacts.update(quality_selection_artifacts or {})
         return artifacts
 
     def _decode_input(self, input_path: Path):

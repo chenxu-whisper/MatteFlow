@@ -91,6 +91,11 @@ class MattingConfig:
     hair_protect: bool = True             # 发丝/毛发保护
     feather_enhance: bool = False         # 羽毛/绒毛增强
     motion_blur_protect: bool = True      # 运动模糊边缘保护
+
+    # ==================== 质量选择系统 ====================
+    quality_selection_enable: bool = False
+    quality_candidate_models: tuple[str, ...] = ("matanyone2", "sam2", "birefnet", "traditional")
+    quality_selection_mode: str = "region"
     
     # 纯色绿幕模式
     pure_color_mode: bool = False         # 纯色绿幕模式（更激进的背景去除）

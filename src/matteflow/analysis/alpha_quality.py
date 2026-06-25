@@ -44,7 +44,7 @@ class AlphaQualityAnalyzer:
         residue_scores = []
         for alpha in alphas:
             alpha_f = self._as_alpha(alpha)
-            edge_scores.append(float(((alpha_f > 0.05) & (alpha_f < 0.95)).mean()))
+            edge_scores.append(float(self._uncertain_edge_mask(alpha_f).mean()))
             speckles = self._speckle_mask(alpha_f)
             holes = self._hole_mask(alpha_f)
             speckle_pixels += int(speckles.sum())
@@ -102,7 +102,7 @@ class AlphaQualityAnalyzer:
         fg = alpha >= 0.70
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         closed = cv2.morphologyEx(fg.astype(np.uint8), cv2.MORPH_CLOSE, kernel, iterations=1).astype(bool)
-        return closed & (~fg)
+        return self._large_components(closed & (~fg), min_area=5)
 
     @staticmethod
     def _small_components(mask: np.ndarray, max_area: int) -> np.ndarray:
@@ -112,6 +112,17 @@ class AlphaQualityAnalyzer:
         result = np.zeros_like(mask, dtype=bool)
         for label in range(1, labels_count):
             if int(stats[label, cv2.CC_STAT_AREA]) <= max_area:
+                result |= labels == label
+        return result
+
+    @staticmethod
+    def _large_components(mask: np.ndarray, min_area: int) -> np.ndarray:
+        if not np.any(mask):
+            return np.zeros_like(mask, dtype=bool)
+        labels_count, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), 8)
+        result = np.zeros_like(mask, dtype=bool)
+        for label in range(1, labels_count):
+            if int(stats[label, cv2.CC_STAT_AREA]) >= min_area:
                 result |= labels == label
         return result
 

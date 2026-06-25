@@ -13,6 +13,10 @@ from matteflow.analysis.p0_quality import P0QualityAnalyzer  # noqa: E402
 from matteflow.analysis.region_ownership import RegionOwnership  # noqa: E402
 from matteflow.config import BackgroundMode, MattingConfig, QualityMode  # noqa: E402
 from matteflow.reporting import ProcessingReportBuilder, ProcessingReportWriter  # noqa: E402
+from matteflow.reporting.report_view import (  # noqa: E402
+    ProcessingReportViewBuilder,
+    format_quality_selection_summary,
+)
 
 
 def test_builder_creates_required_sections_and_serializable_values(tmp_path):
@@ -48,6 +52,13 @@ def test_builder_creates_required_sections_and_serializable_values(tmp_path):
         last_active_ai_model="gvm",
         last_fallback_quality_metrics={"weighted_score": np.float32(0.82)},
         green_screen_layer_debug={"base": object()},
+        last_quality_selection={
+            "available": True,
+            "candidate_count": np.int64(2),
+            "selected_model_counts": {"traditional": np.int64(3)},
+            "candidate_quality": {"traditional": {"overall_score": np.float32(0.8)}},
+            "skipped_candidates": [],
+        },
     )
     decontaminate_context = {
         "foreground_recovery": {
@@ -88,6 +99,7 @@ def test_builder_creates_required_sections_and_serializable_values(tmp_path):
         "regions",
         "model_decisions",
         "fusion",
+        "quality_selection",
         "foreground_recovery",
         "artifacts",
         "warnings",
@@ -104,6 +116,9 @@ def test_builder_creates_required_sections_and_serializable_values(tmp_path):
     assert payload["regions"]["transparent_effect_pixels"] == 2
     assert payload["model_decisions"]["fallback_quality_metrics"]["weighted_score"] == 0.82
     assert payload["model_decisions"]["green_screen_layer_debug_available"] is True
+    assert payload["quality_selection"]["available"] is True
+    assert payload["quality_selection"]["candidate_count"] == 2
+    assert payload["quality_selection"]["selected_model_counts"]["traditional"] == 3
     assert payload["fusion"]["available"] is True
     assert payload["fusion"]["rejected_takeovers"]["luminous_prop"] == 2
     assert payload["foreground_recovery"]["screen_rgb"] == [0.0, 210.0, 40.0]
@@ -137,6 +152,13 @@ def test_writer_writes_stable_processing_report_json(tmp_path):
         "available": False,
         "selected_by_region": {},
         "rejected_takeovers": {},
+    }
+    assert payload["quality_selection"] == {
+        "available": False,
+        "candidate_count": 0,
+        "selected_model_counts": {},
+        "candidate_quality": {},
+        "skipped_candidates": [],
     }
     assert report_path.read_text(encoding="utf-8").endswith("\n")
 
@@ -186,6 +208,47 @@ def test_builder_handles_missing_optional_diagnostics(tmp_path):
         "uncertain_edge_pixels": 0,
     }
     assert payload["model_decisions"]["active_ai_model"] is None
+    assert payload["quality_selection"]["available"] is False
     assert payload["foreground_recovery"] == {}
     assert payload["artifacts"] == {}
     assert payload["warnings"] == []
+
+
+def test_report_view_formats_quality_selection_summary():
+    summary = format_quality_selection_summary(
+        {
+            "quality_selection": {
+                "available": True,
+                "candidate_count": 2,
+                "selected_model_counts": {"matanyone2": 4},
+                "skipped_candidates": [{"name": "sam2", "reason": "guidance_missing"}],
+            }
+        }
+    )
+
+    assert "质量选择: 已启用" in summary
+    assert "候选数量: 2" in summary
+    assert "matanyone2: 4" in summary
+    assert "sam2: guidance_missing" in summary
+
+
+def test_report_view_includes_quality_selection_summary_in_markdown():
+    view = ProcessingReportViewBuilder().from_payload(
+        {
+            "quality": {},
+            "job": {},
+            "timings": {},
+            "regions": {},
+            "foreground_recovery": {},
+            "fusion": {},
+            "quality_selection": {
+                "available": True,
+                "candidate_count": 1,
+                "selected_model_counts": {"traditional": 3},
+            },
+        }
+    )
+
+    markdown = view.to_markdown()
+    assert "质量选择: 已启用" in markdown
+    assert "traditional: 3" in markdown

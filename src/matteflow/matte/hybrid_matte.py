@@ -24,6 +24,7 @@ class HybridMatte:
         self.last_active_ai_model = None
         self.last_fallback_quality_metrics = None
         self.last_green_screen_layer_debug = None
+        self.last_quality_selection = None
         self.last_fusion_quality_gate_diagnostics = None
         self.fusion_quality_gate = FusionQualityGate()
         self.rvm = None
@@ -416,6 +417,17 @@ class HybridMatte:
         """序列抠图"""
         self.last_active_ai_model = None
         self.last_green_screen_layer_debug = None
+        self.last_quality_selection = None
+        if getattr(self.config, "quality_selection_enable", False):
+            quality_matte = self._build_quality_driven_matte(bg_mode)
+            alphas = quality_matte.generate_sequence(
+                frames,
+                cancel_check=cancel_check,
+                progress_callback=progress_callback,
+            )
+            self.last_quality_selection = quality_matte.last_quality_selection
+            self.last_active_ai_model = "quality_selection"
+            return alphas
         if bg_mode == BackgroundMode.GREEN_SCREEN:
             return self._green_screen_matte(frames, progress_callback, cancel_check)
         elif bg_mode == BackgroundMode.BLACK_BACKGROUND:
@@ -425,6 +437,19 @@ class HybridMatte:
         else:
             # Auto - 默认用绿幕逻辑
             return self._green_screen_matte(frames, progress_callback, cancel_check)
+
+    def _build_quality_driven_matte(self, bg_mode: BackgroundMode):
+        from .quality_driven_matte import QualityDrivenMatte
+
+        return QualityDrivenMatte(
+            self.config,
+            background_mode=bg_mode,
+            candidate_engines={
+                "matanyone2": self.matanyone2,
+                "birefnet": self.birefnet,
+                "sam2": self.sam2,
+            },
+        )
     
     def _green_screen_matte(self, frames: List[np.ndarray], progress_callback, cancel_check=None) -> List[np.ndarray]:
         """绿幕抠图 - 修复：传统算法为主，AI 仅辅助边缘细化"""

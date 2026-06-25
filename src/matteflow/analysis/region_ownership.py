@@ -97,6 +97,15 @@ class RegionOwnershipAnalyzer:
         )
         uncertain_edge = self._uncertain_edge_mask(alpha_f)
         hair_edge = uncertain_edge & (brightness > 80.0) & (chroma < 180.0) & (~luminous_prop)
+        high_alpha_white_subject = (
+            (base_f >= 0.88)
+            & (alpha_f >= 0.88)
+            & (brightness > 175.0)
+            & (chroma < 70.0)
+            & non_screen
+            & (~luminous_prop)
+            & (~transparent_effect)
+        )
 
         document_like = (
             (base_f > 0.35)
@@ -105,6 +114,7 @@ class RegionOwnershipAnalyzer:
             & (chroma < 45.0)
             & (~luminous_prop)
             & (~transparent_effect)
+            & (~high_alpha_white_subject)
         )
         background_residue = self._large_component_mask(document_like, min_area=96)
 

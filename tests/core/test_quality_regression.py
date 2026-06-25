@@ -30,6 +30,7 @@ def _processing_report(
     overall_score: float,
     hole_pixels: int = 0,
     p0_risks: dict | None = None,
+    quality_selection: dict | None = None,
 ) -> dict:
     return {
         "schema_version": 1,
@@ -59,6 +60,15 @@ def _processing_report(
         },
         "model_decisions": {"active_ai_model": "gvm"},
         "fusion": {"available": False},
+        "quality_selection": quality_selection
+        if quality_selection is not None
+        else {
+            "available": False,
+            "candidate_count": 0,
+            "selected_model_counts": {},
+            "candidate_quality": {},
+            "skipped_candidates": [],
+        },
         "foreground_recovery": {},
         "artifacts": {},
         "warnings": [],
@@ -205,3 +215,30 @@ def test_quality_regression_evaluator_fails_empty_report_roots(tmp_path):
     assert result.failed_count == 1
     assert result.samples[0].sample_name == tmp_path.name
     assert any("no processing_report.json files found" in failure for failure in result.samples[0].failures)
+
+
+def test_quality_regression_evaluator_flags_enabled_quality_selection_without_candidates(tmp_path):
+    report = _write_report(
+        tmp_path / "no-candidates" / "processing_report.json",
+        _processing_report(
+            "no-candidates",
+            overall_score=0.94,
+            quality_selection={
+                "available": True,
+                "candidate_count": 0,
+                "selected_model_counts": {},
+                "candidate_quality": {},
+                "skipped_candidates": [],
+            },
+        ),
+    )
+
+    result = QualityRegressionEvaluator().evaluate_paths([report])
+
+    sample = result.samples_by_name["no-candidates"]
+    assert sample.metrics["quality_selection.available"] is True
+    assert sample.metrics["quality_selection.candidate_count"] == 0
+    assert any(
+        "quality selection enabled but no candidates available" in failure
+        for failure in sample.failures
+    )

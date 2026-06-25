@@ -261,6 +261,11 @@ class QualityRegressionEvaluator:
             failures.append(
                 f"temporal_flicker {temporal_flicker:.3f} above maximum {thresholds.max_temporal_flicker:.3f}"
             )
+        if (
+            metrics.get("quality_selection.available") is True
+            and _int_metric(metrics, "quality_selection.candidate_count") <= 0
+        ):
+            failures.append("quality selection enabled but no candidates available")
 
         baseline_score = baseline_metrics.get("overall_score")
         if _is_number(baseline_score):
@@ -336,6 +341,13 @@ def _extract_metrics(payload: Mapping[str, Any]) -> dict[str, Any]:
             metric_prefix = f"p0_risk.{risk_name}"
             metrics[f"{metric_prefix}.score"] = _float_metric(risk_payload, "score")
             metrics[f"{metric_prefix}.level"] = str(risk_payload.get("level", "pass"))
+    quality_selection = payload.get("quality_selection")
+    if isinstance(quality_selection, Mapping):
+        metrics["quality_selection.available"] = bool(quality_selection.get("available", False))
+        metrics["quality_selection.candidate_count"] = _int_metric(
+            quality_selection,
+            "candidate_count",
+        )
     return metrics
 
 

@@ -21,6 +21,7 @@ class ProcessingReportView:
     region_summary: str
     recovery_summary: str
     fusion_summary: str = ""
+    quality_selection_summary: str = ""
     warnings: tuple[str, ...] = ()
 
     def to_markdown(self) -> str:
@@ -33,6 +34,7 @@ class ProcessingReportView:
             self.quality_summary,
             self.model_summary,
             self.region_summary,
+            self.quality_selection_summary,
             self.recovery_summary,
             self.fusion_summary,
             self._warnings_markdown(),
@@ -78,6 +80,7 @@ class ProcessingReportViewBuilder:
             region_summary=self._region_summary(payload),
             recovery_summary=self._recovery_summary(payload),
             fusion_summary=self._fusion_summary(payload),
+            quality_selection_summary=format_quality_selection_summary(payload),
             warnings=tuple(str(item) for item in payload.get("warnings", ()) or ()),
         )
 
@@ -92,6 +95,7 @@ class ProcessingReportViewBuilder:
             region_summary="",
             recovery_summary="",
             fusion_summary="",
+            quality_selection_summary="",
             warnings=(),
         )
 
@@ -180,6 +184,33 @@ class ProcessingReportViewBuilder:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def format_quality_selection_summary(payload: Mapping[str, Any]) -> str:
+    quality_selection = _mapping(payload.get("quality_selection"))
+    if not quality_selection.get("available"):
+        return "**质量选择**\n质量选择: 未启用"
+
+    lines = [
+        "**质量选择**",
+        "质量选择: 已启用",
+        f"候选数量: {_format_int(quality_selection.get('candidate_count'))}",
+    ]
+    selected_counts = _mapping(quality_selection.get("selected_model_counts"))
+    if selected_counts:
+        lines.append("选中模型统计:")
+        lines.extend(f"- {model_name}: {_format_int(count)}" for model_name, count in selected_counts.items())
+
+    skipped = quality_selection.get("skipped_candidates") or []
+    if skipped:
+        lines.append("跳过候选:")
+        for item in skipped:
+            if not isinstance(item, Mapping):
+                continue
+            lines.append(
+                f"- {_format_value(item.get('name'))}: {_format_value(item.get('reason'))}"
+            )
+    return "\n".join(lines)
 
 
 def _format_value(value: Any) -> str:

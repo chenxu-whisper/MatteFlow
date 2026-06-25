@@ -126,3 +126,52 @@ def test_pipeline_reuses_matte_stage_base_alpha_when_rebuilding_region_context(m
     assert captured_base_alphas
     assert all(item is not None for item in captured_base_alphas)
     assert all(np.array_equal(item, base_alpha) for item in captured_base_alphas)
+
+
+def test_pipeline_reports_quality_selection_debug_artifacts_when_debug_enabled(monkeypatch, tmp_path):
+    config = MattingConfig(
+        background_mode=BackgroundMode.GREEN_SCREEN,
+        quality_mode=QualityMode.FAST,
+        output_fg=False,
+        output_matte=False,
+        output_comp=False,
+        output_processed=False,
+        output_debug=True,
+    )
+    pipeline = MattingPipeline(config)
+    frame = np.full((4, 4, 3), [0, 220, 40], dtype=np.uint8)
+    alpha = np.zeros((4, 4), dtype=np.float32)
+    alpha[1:3, 1:3] = 1.0
+    pipeline.hybrid_matte.last_quality_selection = {
+        "available": True,
+        "candidate_count": 1,
+        "selected_model_counts": {"traditional": 1},
+        "candidate_quality": {"traditional": {"overall_score": 0.9}},
+        "skipped_candidates": [],
+    }
+
+    monkeypatch.setattr(
+        pipeline,
+        "_decode_input",
+        lambda input_path: ([frame], {"width": 4, "height": 4, "fps": 1.0}),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_generate_matte",
+        lambda frames_arg, bg_mode, progress_callback, cancel_check=None: [alpha],
+    )
+    monkeypatch.setattr(
+        pipeline.decontaminate,
+        "process",
+        lambda frames_arg, alphas_arg, bg_mode, context=None: frames_arg,
+    )
+
+    pipeline.process(tmp_path / "input.png", tmp_path / "out")
+
+    report_path = tmp_path / "out" / "processing_report.json"
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["artifacts"]["quality_selection_debug_dir"] == "debug\\quality_selection"
+    assert payload["artifacts"]["quality_selection_contact_sheet"] == (
+        "debug\\quality_selection\\quality_selection_contact_sheet.png"
+    )
+    assert (tmp_path / "out" / "debug" / "quality_selection" / "quality_selection_contact_sheet.png").exists()
