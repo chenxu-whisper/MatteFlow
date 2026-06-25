@@ -96,6 +96,7 @@ class MattingConfig:
     quality_selection_enable: bool = False
     quality_candidate_models: tuple[str, ...] = ("matanyone2", "sam2", "birefnet", "traditional")
     quality_selection_mode: str = "region"
+    quality_birefnet_auto_load: bool = False
     
     # 纯色绿幕模式
     pure_color_mode: bool = False         # 纯色绿幕模式（更激进的背景去除）

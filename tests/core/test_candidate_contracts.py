@@ -23,6 +23,12 @@ def test_config_disables_quality_selection_by_default():
     assert config.quality_selection_mode == "region"
 
 
+def test_quality_birefnet_auto_load_defaults_to_false():
+    config = MattingConfig()
+
+    assert config.quality_birefnet_auto_load is False
+
+
 def test_candidate_sequence_normalizes_alpha_dtype_and_range():
     candidate = MatteCandidateSequence.from_raw(
         name="fake",
