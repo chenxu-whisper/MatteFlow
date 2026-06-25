@@ -5,11 +5,17 @@ from typing import List
 import cv2
 import numpy as np
 
+from ..analysis.alpha_quality import AlphaQualityAnalyzer, AlphaQualityReport
 from ..analysis.region_ownership import RegionOwnership
 from ..config import BackgroundMode, MattingConfig
 from .fusion_quality_gate import FusionCandidate, FusionQualityGate
 
 logger = logging.getLogger(__name__)
+
+FUSION_GUARD_HOLE_PIXEL_TOLERANCE = 5
+FUSION_GUARD_OVERALL_SCORE_DROP_TOLERANCE = 0.0003
+FUSION_GUARD_EDGE_UNCERTAINTY_TOLERANCE = 0.001
+FUSION_GUARD_MIN_PIXELS = 25
 
 
 class HybridMatte:
@@ -863,8 +869,95 @@ class HybridMatte:
             ],
             ownership,
         )
-        self.last_fusion_quality_gate_diagnostics = dict(result.diagnostics)
-        return np.clip(result.alpha, 0.0, 1.0).astype(np.float32, copy=False)
+        result_alpha = np.clip(result.alpha, 0.0, 1.0).astype(np.float32, copy=False)
+        base_alpha_f = np.clip(base_alpha.astype(np.float32, copy=False), 0.0, 1.0)
+        risk_guard = self._green_screen_fusion_risk_guard(
+            selected_alpha=result_alpha,
+            fallback_alpha=base_alpha_f,
+            layer_ownership=layer_ownership,
+        )
+        diagnostics = dict(result.diagnostics)
+        diagnostics["risk_guard"] = risk_guard
+        self.last_fusion_quality_gate_diagnostics = diagnostics
+        if risk_guard["triggered"]:
+            return base_alpha_f.copy()
+        return result_alpha
+
+    def _green_screen_fusion_risk_guard(
+        self,
+        *,
+        selected_alpha: np.ndarray,
+        fallback_alpha: np.ndarray,
+        layer_ownership,
+    ) -> dict:
+        analyzer = AlphaQualityAnalyzer()
+        selected_report = self._analyze_fusion_alpha(analyzer, selected_alpha)
+        fallback_report = self._analyze_fusion_alpha(analyzer, fallback_alpha)
+        reasons: list[str] = []
+        if selected_alpha.size >= FUSION_GUARD_MIN_PIXELS:
+            reasons.extend(self._fusion_guard_reasons(selected_report, fallback_report))
+            if self._has_fusion_edge_takeover(selected_alpha, fallback_alpha, layer_ownership):
+                reasons.append("edge_takeover")
+
+        return {
+            "triggered": bool(reasons),
+            "fallback_candidate": "base_alpha" if reasons else None,
+            "reasons": reasons,
+            "selected_hole_pixels": int(selected_report.hole_pixels),
+            "fallback_hole_pixels": int(fallback_report.hole_pixels),
+            "selected_overall_score": float(selected_report.overall_score),
+            "fallback_overall_score": float(fallback_report.overall_score),
+            "selected_mean_edge_uncertainty": float(selected_report.mean_edge_uncertainty),
+            "fallback_mean_edge_uncertainty": float(fallback_report.mean_edge_uncertainty),
+        }
+
+    @staticmethod
+    def _analyze_fusion_alpha(
+        analyzer: AlphaQualityAnalyzer,
+        alpha: np.ndarray,
+    ) -> AlphaQualityReport:
+        frame = np.zeros((*alpha.shape, 3), dtype=np.uint8)
+        return analyzer.analyze_sequence([frame], [alpha])
+
+    @staticmethod
+    def _fusion_guard_reasons(
+        selected_report: AlphaQualityReport,
+        fallback_report: AlphaQualityReport,
+    ) -> list[str]:
+        reasons: list[str] = []
+        if selected_report.hole_pixels > fallback_report.hole_pixels + FUSION_GUARD_HOLE_PIXEL_TOLERANCE:
+            reasons.append("hole_pixels")
+        if (
+            fallback_report.overall_score - selected_report.overall_score
+            > FUSION_GUARD_OVERALL_SCORE_DROP_TOLERANCE
+        ):
+            reasons.append("overall_score")
+        if (
+            selected_report.mean_edge_uncertainty - fallback_report.mean_edge_uncertainty
+            > FUSION_GUARD_EDGE_UNCERTAINTY_TOLERANCE
+        ):
+            reasons.append("mean_edge_uncertainty")
+        return reasons
+
+    @staticmethod
+    def _has_fusion_edge_takeover(
+        selected_alpha: np.ndarray,
+        fallback_alpha: np.ndarray,
+        layer_ownership,
+    ) -> bool:
+        subject_owned = np.asarray(layer_ownership.subject >= 0.5, dtype=bool)
+        non_subject_takeover = ~subject_owned
+        if hasattr(layer_ownership, "effect") and hasattr(layer_ownership, "background"):
+            non_subject_takeover = (
+                np.asarray(layer_ownership.effect >= 0.5, dtype=bool)
+                | np.asarray(layer_ownership.background >= 0.5, dtype=bool)
+            )
+        suppressed_subject_support = (
+            (fallback_alpha >= 0.70)
+            & (selected_alpha < fallback_alpha - 0.50)
+            & non_subject_takeover
+        )
+        return int(np.count_nonzero(suppressed_subject_support)) > FUSION_GUARD_HOLE_PIXEL_TOLERANCE
 
     @staticmethod
     def _fusion_quality_gate_hair_edge(fused_alpha: np.ndarray, layer_ownership) -> np.ndarray:

@@ -161,15 +161,18 @@ class ProcessingReportBuilder:
         if hybrid_matte is None:
             active_model = None
             fallback_metrics = {}
+            fusion_quality_gate = {}
             has_green_debug = False
         else:
             active_model = getattr(hybrid_matte, "last_active_ai_model", None)
             fallback_metrics = getattr(hybrid_matte, "last_fallback_quality_metrics", None) or {}
+            fusion_quality_gate = getattr(hybrid_matte, "last_fusion_quality_gate_diagnostics", None) or {}
             has_green_debug = bool(getattr(hybrid_matte, "green_screen_layer_debug", None))
 
         return {
             "active_ai_model": active_model,
             "fallback_quality_metrics": _json_safe(fallback_metrics),
+            "fusion_quality_gate": _json_safe(fusion_quality_gate),
             "green_screen_layer_debug_available": has_green_debug,
         }
 

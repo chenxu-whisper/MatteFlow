@@ -51,6 +51,12 @@ def test_builder_creates_required_sections_and_serializable_values(tmp_path):
     hybrid_matte = SimpleNamespace(
         last_active_ai_model="gvm",
         last_fallback_quality_metrics={"weighted_score": np.float32(0.82)},
+        last_fusion_quality_gate_diagnostics={
+            "risk_guard": {
+                "triggered": np.bool_(True),
+                "reasons": ["hole_pixels"],
+            }
+        },
         green_screen_layer_debug={"base": object()},
         last_quality_selection={
             "available": True,
@@ -115,6 +121,8 @@ def test_builder_creates_required_sections_and_serializable_values(tmp_path):
     assert payload["regions"]["subject_pixels"] == 3
     assert payload["regions"]["transparent_effect_pixels"] == 2
     assert payload["model_decisions"]["fallback_quality_metrics"]["weighted_score"] == 0.82
+    assert payload["model_decisions"]["fusion_quality_gate"]["risk_guard"]["triggered"] is True
+    assert payload["model_decisions"]["fusion_quality_gate"]["risk_guard"]["reasons"] == ["hole_pixels"]
     assert payload["model_decisions"]["green_screen_layer_debug_available"] is True
     assert payload["quality_selection"]["available"] is True
     assert payload["quality_selection"]["candidate_count"] == 2
