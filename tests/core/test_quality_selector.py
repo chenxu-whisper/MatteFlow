@@ -293,3 +293,105 @@ def test_quality_selector_allows_clear_edge_improvement_without_overall_regressi
     selected = result.alphas[0]
     assert np.allclose(selected[ownership.hair_edge], birefnet.alphas[0][ownership.hair_edge])
     assert result.selected_model_counts == {"birefnet": 1}
+
+
+def test_quality_selector_rolls_back_frame_when_combination_adds_hole_risk():
+    ownership = RegionOwnership(
+        subject=np.ones((7, 7), dtype=bool),
+        hair_edge=np.zeros((7, 7), dtype=bool),
+        luminous_prop=np.zeros((7, 7), dtype=bool),
+        transparent_effect=np.zeros((7, 7), dtype=bool),
+        background_residue=np.zeros((7, 7), dtype=bool),
+        uncertain_edge=np.zeros((7, 7), dtype=bool),
+    )
+    stable_alpha = np.ones((7, 7), dtype=np.float32)
+    risky_alpha = np.ones((7, 7), dtype=np.float32)
+    risky_alpha[2:5, 2:5] = 0.0
+    stable = _candidate_with_shape("stable", stable_alpha)
+    risky = _candidate_with_shape("risky", risky_alpha)
+    quality_report = CandidateQualityReport(
+        qualities=(
+            CandidateQuality(
+                candidate_name="stable",
+                frame_index=0,
+                overall_score=0.90,
+                region_scores={"subject": 0.90},
+                signals={},
+            ),
+            CandidateQuality(
+                candidate_name="risky",
+                frame_index=0,
+                overall_score=0.95,
+                region_scores={"subject": 0.95},
+                signals={},
+            ),
+        )
+    )
+
+    result = QualitySelector().select(
+        candidates=[stable, risky],
+        quality_report=quality_report,
+        ownerships=[ownership],
+    )
+
+    assert np.allclose(result.alphas[0], stable_alpha)
+    payload = result.to_dict()
+    assert payload["selected_model_counts"] == {"stable": 1}
+    assert len(payload["guarded_frames"]) == 1
+    guard = payload["guarded_frames"][0]
+    assert guard["frame_index"] == 0
+    assert guard["fallback_candidate"] == "stable"
+    assert "hole_pixels" in guard["reasons"]
+    assert guard["selected_hole_pixels"] == 9
+    assert guard["fallback_hole_pixels"] == 0
+    assert guard["selected_overall_score"] < guard["fallback_overall_score"]
+    assert guard["selected_mean_edge_uncertainty"] == 0.0
+    assert guard["fallback_mean_edge_uncertainty"] == 0.0
+
+
+def test_quality_selector_uses_subject_candidate_as_edge_takeover_guard_baseline():
+    ownership = RegionOwnership(
+        subject=np.ones((7, 7), dtype=bool),
+        hair_edge=np.zeros((7, 7), dtype=bool),
+        luminous_prop=np.zeros((7, 7), dtype=bool),
+        transparent_effect=np.zeros((7, 7), dtype=bool),
+        background_residue=np.zeros((7, 7), dtype=bool),
+        uncertain_edge=np.zeros((7, 7), dtype=bool),
+    )
+    ownership.subject[2:5, 2:5] = False
+    ownership.hair_edge[2:5, 2:5] = True
+    stable_alpha = np.ones((7, 7), dtype=np.float32)
+    risky_edge_alpha = np.ones((7, 7), dtype=np.float32)
+    risky_edge_alpha[2:5, 2:5] = 0.0
+    stable = _candidate_with_shape("stable_subject", stable_alpha)
+    risky_edge = _candidate_with_shape("risky_edge", risky_edge_alpha)
+    quality_report = CandidateQualityReport(
+        qualities=(
+            CandidateQuality(
+                candidate_name="stable_subject",
+                frame_index=0,
+                overall_score=0.90,
+                region_scores={"subject": 0.95, "hair_edge": 0.50},
+                signals={},
+            ),
+            CandidateQuality(
+                candidate_name="risky_edge",
+                frame_index=0,
+                overall_score=0.92,
+                region_scores={"subject": 0.10, "hair_edge": 0.95},
+                signals={},
+            ),
+        )
+    )
+
+    result = QualitySelector().select(
+        candidates=[stable, risky_edge],
+        quality_report=quality_report,
+        ownerships=[ownership],
+    )
+
+    assert np.allclose(result.alphas[0], stable_alpha)
+    payload = result.to_dict()
+    assert payload["selected_model_counts"] == {"stable_subject": 2}
+    assert payload["guarded_frames"][0]["fallback_candidate"] == "stable_subject"
+    assert "edge_takeover" in payload["guarded_frames"][0]["reasons"]
