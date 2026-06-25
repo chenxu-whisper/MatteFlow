@@ -7,7 +7,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from matteflow.analysis.region_ownership import RegionOwnership  # noqa: E402
-from matteflow.evaluation.matte_quality import MatteQualityEvaluator  # noqa: E402
+from matteflow.evaluation.matte_quality import (  # noqa: E402
+    CandidateQuality,
+    CandidateQualityReport,
+    MatteQualityEvaluator,
+)
 from matteflow.matte.candidates.types import MatteCandidateSequence  # noqa: E402
 from matteflow.matte.quality_selector import QualitySelector  # noqa: E402
 
@@ -195,3 +199,97 @@ def test_quality_selector_skips_unavailable_candidate_and_selects_best_model_by_
         "traditional": 3,
         "birefnet": 1,
     }
+
+
+def test_quality_selector_requires_clear_edge_score_gain_and_overall_guard():
+    ownership = RegionOwnership(
+        subject=np.zeros((2, 2), dtype=bool),
+        hair_edge=np.array([[True, True], [False, False]]),
+        luminous_prop=np.zeros((2, 2), dtype=bool),
+        transparent_effect=np.zeros((2, 2), dtype=bool),
+        background_residue=np.zeros((2, 2), dtype=bool),
+        uncertain_edge=np.zeros((2, 2), dtype=bool),
+    )
+    traditional = _candidate(
+        "traditional",
+        np.array([[0.45, 0.55], [0.0, 0.0]], dtype=np.float32),
+    )
+    birefnet = _candidate(
+        "birefnet",
+        np.array([[0.25, 0.75], [0.0, 0.0]], dtype=np.float32),
+    )
+    quality_report = CandidateQualityReport(
+        qualities=(
+            CandidateQuality(
+                candidate_name="traditional",
+                frame_index=0,
+                overall_score=0.70,
+                region_scores={"hair_edge": 0.62},
+                signals={},
+            ),
+            CandidateQuality(
+                candidate_name="birefnet",
+                frame_index=0,
+                overall_score=0.60,
+                region_scores={"hair_edge": 0.64},
+                signals={},
+            ),
+        )
+    )
+
+    result = QualitySelector().select(
+        candidates=[traditional, birefnet],
+        quality_report=quality_report,
+        ownerships=[ownership],
+    )
+
+    selected = result.alphas[0]
+    assert np.allclose(selected[ownership.hair_edge], traditional.alphas[0][ownership.hair_edge])
+    assert result.selected_model_counts == {"traditional": 1}
+
+
+def test_quality_selector_allows_clear_edge_improvement_without_overall_regression():
+    ownership = RegionOwnership(
+        subject=np.zeros((2, 2), dtype=bool),
+        hair_edge=np.array([[True, True], [False, False]]),
+        luminous_prop=np.zeros((2, 2), dtype=bool),
+        transparent_effect=np.zeros((2, 2), dtype=bool),
+        background_residue=np.zeros((2, 2), dtype=bool),
+        uncertain_edge=np.zeros((2, 2), dtype=bool),
+    )
+    traditional = _candidate(
+        "traditional",
+        np.array([[0.45, 0.55], [0.0, 0.0]], dtype=np.float32),
+    )
+    birefnet = _candidate(
+        "birefnet",
+        np.array([[0.35, 0.65], [0.0, 0.0]], dtype=np.float32),
+    )
+    quality_report = CandidateQualityReport(
+        qualities=(
+            CandidateQuality(
+                candidate_name="traditional",
+                frame_index=0,
+                overall_score=0.70,
+                region_scores={"hair_edge": 0.62},
+                signals={},
+            ),
+            CandidateQuality(
+                candidate_name="birefnet",
+                frame_index=0,
+                overall_score=0.67,
+                region_scores={"hair_edge": 0.67},
+                signals={},
+            ),
+        )
+    )
+
+    result = QualitySelector().select(
+        candidates=[traditional, birefnet],
+        quality_report=quality_report,
+        ownerships=[ownership],
+    )
+
+    selected = result.alphas[0]
+    assert np.allclose(selected[ownership.hair_edge], birefnet.alphas[0][ownership.hair_edge])
+    assert result.selected_model_counts == {"birefnet": 1}

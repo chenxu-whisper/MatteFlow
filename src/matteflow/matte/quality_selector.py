@@ -11,6 +11,10 @@ from ..analysis.region_ownership import RegionOwnership
 from ..evaluation.matte_quality import CandidateQualityReport, REGION_FIELDS
 from .candidates.types import MatteCandidateSequence
 
+EDGE_GUARDED_REGIONS = frozenset({"hair_edge", "uncertain_edge"})
+EDGE_REGION_SCORE_MARGIN = 0.03
+EDGE_OVERALL_SCORE_DROP_TOLERANCE = 0.05
+
 
 @dataclass(frozen=True)
 class SelectionDecision:
@@ -133,12 +137,40 @@ class QualitySelector:
         frame_index: int,
         region: str,
     ) -> tuple[MatteCandidateSequence, float] | None:
-        best: tuple[MatteCandidateSequence, float] | None = None
+        best: tuple[MatteCandidateSequence, float, float] | None = None
         for candidate in candidates:
             quality = quality_by_frame.get((frame_index, candidate.name))
             if quality is None:
                 continue
             score = float(quality.region_scores.get(region, quality.overall_score))
-            if best is None or score > best[1]:
-                best = (candidate, score)
-        return best
+            overall_score = float(quality.overall_score)
+            if best is None:
+                best = (candidate, score, overall_score)
+            elif QualitySelector._is_better_candidate(
+                region=region,
+                score=score,
+                overall_score=overall_score,
+                best_score=best[1],
+                best_overall_score=best[2],
+            ):
+                best = (candidate, score, overall_score)
+        if best is None:
+            return None
+        return best[0], best[1]
+
+    @staticmethod
+    def _is_better_candidate(
+        *,
+        region: str,
+        score: float,
+        overall_score: float,
+        best_score: float,
+        best_overall_score: float,
+    ) -> bool:
+        if region not in EDGE_GUARDED_REGIONS:
+            return score > best_score
+        has_clear_region_gain = score >= best_score + EDGE_REGION_SCORE_MARGIN
+        overall_is_not_regressed = (
+            overall_score >= best_overall_score - EDGE_OVERALL_SCORE_DROP_TOLERANCE
+        )
+        return has_clear_region_gain and overall_is_not_regressed
