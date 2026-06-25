@@ -8,7 +8,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from matteflow.config import BackgroundMode, MattingConfig  # noqa: E402
-from matteflow.matte.candidates.types import CandidateGenerationResult, MatteCandidateSequence  # noqa: E402
+from matteflow.matte.candidates.traditional import TraditionalCandidateGenerator  # noqa: E402
+from matteflow.matte.candidates.types import (  # noqa: E402
+    CandidateGenerationResult,
+    CandidateSkipReason,
+    MatteCandidateSequence,
+)
 from matteflow.matte.quality_driven_matte import QualityDrivenMatte  # noqa: E402
 
 
@@ -29,6 +34,18 @@ class FakeGenerator:
                 diagnostics={"available": True},
                 frame_shapes=frame_shapes,
             )
+        )
+
+
+class _FailingBiRefNetGenerator:
+    name = "birefnet"
+
+    def generate(self, frames, *, frame_shapes, cancel_check=None, progress_callback=None):
+        return CandidateGenerationResult(
+            candidate=None,
+            skipped=True,
+            skip_reason=CandidateSkipReason.GENERATION_FAILED,
+            message="birefnet failed",
         )
 
 
@@ -76,3 +93,25 @@ def test_quality_driven_matte_logs_skipped_candidates(caplog):
         "Quality candidate skipped: name=sam2 reason=guidance_missing "
         "message=SAM2 candidate requires guidance and is not wired in this phase"
     ) in caplog.text
+
+
+def test_quality_driven_matte_uses_traditional_when_birefnet_candidate_fails():
+    config = MattingConfig()
+    frames = [np.full((32, 32, 3), [0, 255, 0], dtype=np.uint8)]
+    frames[0][8:24, 8:24] = [255, 0, 0]
+    matte = QualityDrivenMatte(
+        config,
+        background_mode=BackgroundMode.GREEN_SCREEN,
+        generators=[
+            _FailingBiRefNetGenerator(),
+            TraditionalCandidateGenerator(config, background_mode=BackgroundMode.GREEN_SCREEN),
+        ],
+    )
+
+    alphas = matte.generate_sequence(frames)
+
+    assert len(alphas) == 1
+    assert matte.last_quality_selection["candidate_count"] == 1
+    assert matte.last_quality_selection["skipped_candidates"][0]["name"] == "birefnet"
+    assert matte.last_quality_selection["skipped_candidates"][0]["reason"] == "generation_failed"
+    assert matte.last_quality_selection["selected_model_counts"]["traditional"] >= 1
