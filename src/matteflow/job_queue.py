@@ -274,6 +274,8 @@ class GPUJobQueue:
                 quality_mode=job.params.quality_mode,
                 use_ai=job.params.use_ai,
                 ai_model=job.params.ai_model,
+                quality_selection_enable=job.params.quality_selection_enable,
+                quality_birefnet_auto_load=job.params.quality_birefnet_auto_load,
                 config_overrides=dict(job.params.config_overrides),
             ),
             id=job.id,

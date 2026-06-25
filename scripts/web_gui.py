@@ -85,6 +85,8 @@ GUI_DEFAULTS = {
     "transparency_preserve": 0.7,
     "gvm_max_internal_size": 768,
     "auto_optimize": False,
+    "quality_selection_enable": False,
+    "quality_birefnet_auto_load": False,
     "generate_zip": False,
     "output_fg": False,
     "output_matte": True,
@@ -143,6 +145,8 @@ RECOMMENDED_PRESET_OUTPUT_KEYS = [
     "transparency_preserve",
     "gvm_max_internal_size",
     "auto_optimize",
+    "quality_selection_enable",
+    "quality_birefnet_auto_load",
     "generate_zip",
     "output_fg",
     "output_matte",
@@ -477,6 +481,8 @@ def _apply_recommended_preset() -> dict:
         "transparency_preserve": GUI_DEFAULTS["transparency_preserve"],
         "gvm_max_internal_size": GUI_DEFAULTS["gvm_max_internal_size"],
         "auto_optimize": GUI_DEFAULTS["auto_optimize"],
+        "quality_selection_enable": GUI_DEFAULTS["quality_selection_enable"],
+        "quality_birefnet_auto_load": GUI_DEFAULTS["quality_birefnet_auto_load"],
         "generate_zip": GUI_DEFAULTS["generate_zip"],
         "output_fg": GUI_DEFAULTS["output_fg"],
         "output_matte": GUI_DEFAULTS["output_matte"],
@@ -595,6 +601,8 @@ def _build_process_job_params(video_path, output_dir, config):
         quality_mode=config.quality_mode,
         use_ai=config.use_ai,
         ai_model=config.ai_model,
+        quality_selection_enable=config.quality_selection_enable,
+        quality_birefnet_auto_load=config.quality_birefnet_auto_load,
         config_overrides=config_overrides,
     )
 
@@ -790,6 +798,8 @@ def process_video(
     transparency_preserve,
     gvm_max_internal_size,
     auto_optimize,
+    quality_selection_enable,
+    quality_birefnet_auto_load,
     # Chroma Key 参数
     screen_color,
     key_strength,
@@ -891,6 +901,8 @@ def process_video(
     config.temporal_strength = temporal_strength
     config.transparency_preserve = transparency_preserve
     config.gvm_max_internal_size = gvm_max_internal_size
+    config.quality_selection_enable = quality_selection_enable
+    config.quality_birefnet_auto_load = quality_birefnet_auto_load
     config.ai_enhance_gamma = ai_gamma
     config.ai_enhance_threshold = ai_threshold
     config.ai_enhance_gain = ai_gain
@@ -1663,6 +1675,18 @@ def create_ui():
                             info="提高会删除低透明噪点，也可能削掉辉光/半透明细节"
                         )
 
+                    with gr.Accordion("实验性质量选择", open=False):
+                        quality_selection_enable = gr.Checkbox(
+                            value=GUI_DEFAULTS["quality_selection_enable"],
+                            label="启用质量选择",
+                            info="生成多个候选 matte 并按区域选择最优结果，处理会更慢"
+                        )
+                        quality_birefnet_auto_load = gr.Checkbox(
+                            value=GUI_DEFAULTS["quality_birefnet_auto_load"],
+                            label="允许 BiRefNet 懒加载",
+                            info="仅在启用质量选择时使用；可能触发模型加载或权重下载"
+                        )
+
                     color_space = gr.Radio(
                         choices=[("sRGB", "sRGB"), ("Rec.709", "Rec709"), ("Linear", "Linear"), ("ACES", "ACES")],
                         value=GUI_FIXED_PARAMETER_DEFAULTS["color_space"],
@@ -1813,6 +1837,8 @@ def create_ui():
             transparency_preserve,
             gvm_max_internal_size,
             auto_optimize,
+            quality_selection_enable,
+            quality_birefnet_auto_load,
             generate_zip,
             output_fg,
             output_matte,
@@ -1854,6 +1880,8 @@ def create_ui():
                 transparency_preserve,
                 gvm_max_internal_size,
                 auto_optimize,
+                quality_selection_enable,
+                quality_birefnet_auto_load,
                 # Chroma Key 参数
                 screen_color,
                 key_strength,

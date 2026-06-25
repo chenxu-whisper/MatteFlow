@@ -74,6 +74,30 @@ def test_service_passes_snapshot_to_pipeline(tmp_path):
     assert result.processing_report_path == tmp_path / "out" / "processing_report.json"
 
 
+def test_service_passes_quality_selection_flags_to_pipeline_config(tmp_path):
+    captured = {}
+
+    class FakePipeline:
+        def __init__(self, config):
+            captured["config"] = config
+
+        def process(self, input_path, output_dir, progress_callback=None):
+            return {"background_mode": "green_screen", "frame_count": 1}
+
+    service = MatteFlowService(pipeline_factory=FakePipeline)
+    params = ProcessJobParams(
+        input_path=tmp_path / "input.png",
+        output_dir=tmp_path / "out",
+        quality_selection_enable=True,
+        quality_birefnet_auto_load=True,
+    )
+
+    service.process(params)
+
+    assert captured["config"].quality_selection_enable is True
+    assert captured["config"].quality_birefnet_auto_load is True
+
+
 def test_service_wraps_pipeline_errors(tmp_path):
     class FailingPipeline:
         def __init__(self, config):

@@ -26,6 +26,8 @@ class ProcessJobParams:
     quality_mode: QualityMode = QualityMode.STANDARD
     use_ai: bool = True
     ai_model: str = "auto"
+    quality_selection_enable: bool = False
+    quality_birefnet_auto_load: bool = False
     config_overrides: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -124,6 +126,8 @@ class MatteFlowService:
         config.quality_mode = params.quality_mode
         config.use_ai = params.use_ai
         config.ai_model = params.ai_model
+        config.quality_selection_enable = params.quality_selection_enable
+        config.quality_birefnet_auto_load = params.quality_birefnet_auto_load
 
         for name, value in params.config_overrides.items():
             if not hasattr(config, name):
