@@ -58,6 +58,18 @@ def test_build_config_enables_quality_selection_from_cli_flag():
     assert config.quality_selection_enable is True
 
 
+def test_build_config_sets_quality_birefnet_auto_load():
+    parser = cli_app.build_parser()
+
+    args = parser.parse_args(
+        ["--input", "sample.mp4", "--quality-selection", "--quality-birefnet-auto-load"]
+    )
+    config = cli_app._build_config(args)
+
+    assert config.quality_selection_enable is True
+    assert config.quality_birefnet_auto_load is True
+
+
 def test_main_keeps_legacy_top_level_process_arguments(monkeypatch):
     captured = {}
 

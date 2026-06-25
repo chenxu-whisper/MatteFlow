@@ -71,6 +71,11 @@ def _add_process_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="启用实验性候选质量选择系统",
     )
+    parser.add_argument(
+        "--quality-birefnet-auto-load",
+        action="store_true",
+        help="质量选择启用时允许 BiRefNet candidate 显式懒加载模型",
+    )
     parser.set_defaults(command="process")
 
 
@@ -129,6 +134,7 @@ def _build_config(args: argparse.Namespace) -> MattingConfig:
     config.output_mask = args.mask
     config.output_debug = args.debug
     config.quality_selection_enable = bool(getattr(args, "quality_selection", False))
+    config.quality_birefnet_auto_load = bool(getattr(args, "quality_birefnet_auto_load", False))
     return config
 
 
