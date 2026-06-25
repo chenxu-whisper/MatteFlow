@@ -118,6 +118,7 @@ MatteFlow 支持可选的质量选择系统。开启 `quality_selection_enable=T
 
 - 候选协议：所有候选输出统一为 `float32` alpha，范围裁剪到 `[0.0, 1.0]`，并校验尺寸。
 - 候选来源：支持传统候选；MatAnyone2、BiRefNet、SAM2-guided 已有 wrapper，模型或 guidance 不可用时会结构化记录 `skipped_candidates`。
+- BiRefNet 候选默认不会自动加载模型。需要真实 BiRefNet candidate 时，必须同时启用质量选择并显式打开 `quality_birefnet_auto_load` 或 CLI 参数 `--quality-birefnet-auto-load`。加载或推理失败会记录为 `skipped_candidates`，不影响 traditional fallback。
 - 质量评估：基于 `RegionOwnership` 对主体、发丝边缘、发光道具、透明光效、背景残留和不确定边缘分别评分。
 - 区域选择：`QualitySelector` 按区域选择得分最高的候选，并记录 `selected_model_counts` 和逐区域 `decisions`。
 - 可观测性：开启 debug 时会输出 `debug/quality_selection/quality_selection_contact_sheet.png` 和质量选择 JSON 摘要。
