@@ -1,7 +1,7 @@
 """去噪点模块 - 去除 alpha 遮罩中的噪点"""
 
-import numpy as np
 import cv2
+import numpy as np
 
 from ..analysis.region_ownership import RegionOwnershipAnalyzer
 from ..config import MattingConfig
@@ -9,24 +9,24 @@ from ..config import MattingConfig
 
 class Despeckle:
     """去除 alpha 遮罩中的噪点"""
-    
+
     def __init__(self, config: MattingConfig):
         self.config = config
         self._region_analyzer = RegionOwnershipAnalyzer()
-    
+
     def process(self, alphas, frames=None, context=None):
         """
         去除噪点
-        
+
         Args:
             alphas: Alpha 列表
-        
+
         Returns:
             去噪后的 alpha 列表
         """
         if not self.config.despeckle_enable:
             return alphas
-        
+
         cleaned = []
         context = context or {}
         for index, alpha in enumerate(alphas):
@@ -40,12 +40,12 @@ class Despeckle:
             )
             cleaned.append(cleaned_alpha)
         return cleaned
-    
+
     def _despeckle_single(self, alpha: np.ndarray, frame=None, context=None, ownership=None) -> np.ndarray:
         """单帧去噪点"""
         alpha_f = np.clip(alpha.astype(np.float32, copy=False), 0.0, 1.0)
         alpha_u8 = np.clip(alpha_f * 255.0, 0.0, 255.0).astype(np.uint8)
-        
+
         # 使用中值滤波去除噪点
         radius = self.config.despeckle_radius
         ksize = 2 * radius + 1
@@ -59,7 +59,7 @@ class Despeckle:
             ownership=ownership,
         )
         cleaned = self._restore_warm_luminous_props(alpha_u8, cleaned, frame=frame, ownership=ownership)
-        
+
         # 阈值处理去除微小噪点
         threshold = int(self.config.despeckle_threshold * 255)
         if threshold > 0:
@@ -67,7 +67,7 @@ class Despeckle:
             if ownership is not None:
                 protected = ownership.transparent_effect | ownership.luminous_prop
                 cleaned = np.where(protected & (alpha_u8 > 0), np.maximum(cleaned, alpha_u8), cleaned).astype(np.uint8)
-        
+
         return cleaned.astype(np.float32) / 255.0
 
     def _is_gvm_active(self, context: dict) -> bool:

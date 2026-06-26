@@ -1,8 +1,8 @@
 import os
-import cv2
 import random
-import numpy as np
 
+import cv2
+import numpy as np
 import torch
 import torchvision
 
@@ -23,7 +23,7 @@ def read_frame_from_videos(frame_root):
             frames.append(frame)
         fps = 24  # default
         frames = torch.Tensor(np.array(frames)).permute(0, 3, 1, 2).contiguous() # TCHW
-    
+
     length = frames.shape[0]
 
     return frames, fps, length, video_name
@@ -39,14 +39,14 @@ def get_video_paths(input_root):
 def str_to_list(value):
     return list(map(int, value.split(',')))
 
-def gen_dilate(alpha, min_kernel_size, max_kernel_size): 
+def gen_dilate(alpha, min_kernel_size, max_kernel_size):
     kernel_size = random.randint(min_kernel_size, max_kernel_size)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size,kernel_size))
     fg_and_unknown = np.array(np.not_equal(alpha, 0).astype(np.float32))
     dilate = cv2.dilate(fg_and_unknown, kernel, iterations=1)*255
     return dilate.astype(np.float32)
 
-def gen_erosion(alpha, min_kernel_size, max_kernel_size): 
+def gen_erosion(alpha, min_kernel_size, max_kernel_size):
     kernel_size = random.randint(min_kernel_size, max_kernel_size)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size,kernel_size))
     fg = np.array(np.equal(alpha, 255).astype(np.float32))

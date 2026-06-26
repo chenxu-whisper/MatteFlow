@@ -1,6 +1,6 @@
+import re
 from datetime import datetime
 from pathlib import Path
-import re
 
 
 def sanitize_output_name(name: str) -> str:

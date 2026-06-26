@@ -1,11 +1,11 @@
 from typing import Optional
-from omegaconf import DictConfig
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from matanyone2.model.transformer.positional_encoding import PositionalEncoding
 from matanyone2.utils.device import safe_autocast
+from omegaconf import DictConfig
 
 
 # @torch.jit.script

@@ -1,19 +1,25 @@
-from typing import List, Dict, Iterable, Tuple
 import logging
-from omegaconf import DictConfig
+from typing import Dict, Iterable, List, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from omegaconf import OmegaConf
 from huggingface_hub import PyTorchModelHubMixin
-
-from matanyone2.model.big_modules import PixelEncoder, UncertPred, KeyProjection, MaskEncoder, PixelFeatureFuser, MaskDecoder
 from matanyone2.model.aux_modules import AuxComputer
-from matanyone2.model.utils.memory_utils import get_affinity, readout
-from matanyone2.model.transformer.object_transformer import QueryTransformer
+from matanyone2.model.big_modules import (
+    KeyProjection,
+    MaskDecoder,
+    MaskEncoder,
+    PixelEncoder,
+    PixelFeatureFuser,
+    UncertPred,
+)
 from matanyone2.model.transformer.object_summarizer import ObjectSummarizer
-from matanyone2.utils.tensor_utils import aggregate
+from matanyone2.model.transformer.object_transformer import QueryTransformer
+from matanyone2.model.utils.memory_utils import get_affinity, readout
 from matanyone2.utils.device import get_default_device, safe_autocast
+from matanyone2.utils.tensor_utils import aggregate
+from omegaconf import DictConfig, OmegaConf
 
 device = get_default_device()
 
@@ -154,11 +160,11 @@ class MatAnyone2(nn.Module,
             pixel_readout = readout(affinity, msk_value, uncert_mask)
             pixel_readout = pixel_readout.view(batch_size, num_objects, self.value_dim,
                                             *pixel_readout.shape[-2:])
-            
+
             uncert_output = self.pred_uncertainty(last_pix_feat, pix_feat, last_pred_mask, pixel_readout[:,0]-msk_value[:,:,-1])
             uncert_prob = uncert_output["prob"].unsqueeze(1) # b n 1 h w
             pixel_readout = pixel_readout*uncert_prob + msk_value[:,:,-1].unsqueeze(1)*(1-uncert_prob)
-                
+
         pixel_readout = self.pixel_fusion(pix_feat, pixel_readout, sensory, last_mask)
 
 
@@ -172,7 +178,7 @@ class MatAnyone2(nn.Module,
         }
 
         return mem_readout, aux_output, uncert_output
-    
+
     def read_first_frame_memory(self, pixel_readout,
                     obj_memory: torch.Tensor, pix_feat: torch.Tensor,
                     sensory: torch.Tensor, last_mask: torch.Tensor,
@@ -186,7 +192,7 @@ class MatAnyone2(nn.Module,
         obj_memory      : B * num_objects * T * num_summaries * C
         pixel_feature   : B * C * H * W
         """
-                
+
         pixel_readout = self.pixel_fusion(pix_feat, pixel_readout, sensory, last_mask)
 
         # read from query transformer
@@ -277,7 +283,7 @@ class MatAnyone2(nn.Module,
                 logits = logits.clamp(0.0, 1.0)
             logits = torch.cat([torch.prod(1 - logits, dim=1, keepdim=True), logits], 1)
             prob = logits
-        
+
         return sensory, logits, prob
 
     def compute_aux(self, pix_feat: torch.Tensor, aux_inputs: Dict[str, torch.Tensor],
@@ -313,7 +319,7 @@ class MatAnyone2(nn.Module,
                         src_dict[k] = torch.cat([src_dict[k], pads], 1)
         elif self.single_object:
             """
-            If the model is multiple-object and we are training in single-object, 
+            If the model is multiple-object and we are training in single-object,
             we strip the last channel of conv1.
             This is not supposed to happen in standard training except when users are trying to
             finetune a trained model with single object datasets.
@@ -330,7 +336,7 @@ class MatAnyone2(nn.Module,
         for k in self.state_dict():
             if k not in src_dict:
                 log.info(f'Key {k} found in self.state_dict() but not in src_dict!!!')
-                
+
         self.load_state_dict(src_dict, strict=False)
 
     @property

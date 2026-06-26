@@ -9,7 +9,7 @@ import numpy as np
 
 from ..analysis.alpha_quality import AlphaQualityAnalyzer, AlphaQualityReport
 from ..analysis.region_ownership import RegionOwnership
-from ..evaluation.matte_quality import CandidateQualityReport, REGION_FIELDS
+from ..evaluation.matte_quality import REGION_FIELDS, CandidateQualityReport
 from .candidates.types import MatteCandidateSequence
 
 EDGE_GUARDED_REGIONS = frozenset({"hair_edge", "uncertain_edge"})

@@ -1,7 +1,9 @@
-from typing import List, Iterable
+from typing import Iterable
+
 import torch
 import torch.nn.functional as F
 from matanyone2.utils.device import safe_autocast
+
 
 # STM
 def pad_divide_by(in_img: torch.Tensor, d: int) -> (torch.Tensor, Iterable[int]):

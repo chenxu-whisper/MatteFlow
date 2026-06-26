@@ -9,16 +9,16 @@ Meta 的 SAM2 视频分割模型，支持视频跟踪和分割
 """
 
 import json
+from pathlib import Path
+from typing import List, Optional, Tuple
+
 import numpy as np
 import torch
-from typing import List, Optional, Tuple
-from pathlib import Path
 
 from ..config import MattingConfig
 from ..errors import JobCancelledError
 from ..utils.model_downloads import download_file_atomically
 from ..utils.model_paths import models_root, resolve_snapshot_repo_dir
-
 
 SAM2_DIRECT_WEIGHT_MIN_BYTES = 50 * 1024 * 1024
 
@@ -47,14 +47,14 @@ def _validate_sam2_config(path: Path) -> tuple[bool, str | None]:
 
 class SAM2Matte:
     """SAM2 视频分割引擎"""
-    
+
     def __init__(self, config: MattingConfig):
         self.config = config
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = None
         self.predictor = None
         self._load_model()
-    
+
     def _load_model(self):
         """加载 SAM2 模型"""
         try:
@@ -62,12 +62,12 @@ class SAM2Matte:
 
             cache_dir = models_root()
             repo_id = "facebook/sam2-hiera-base-plus"
-            
+
             # 检查本地缓存
             local_path = resolve_snapshot_repo_dir(cache_dir, repo_id)
             if local_path is not None:
                 print(f"[SAM2] Found local model at {local_path}")
-            
+
             # 尝试使用 transformers 加载
             try:
                 from transformers import AutoModel
@@ -82,7 +82,7 @@ class SAM2Matte:
                 return
             except Exception as e:
                 print(f"[SAM2] transformers loading failed: {e}")
-            
+
             # 回退到 torch.hub
             try:
                 self.model = torch.hub.load(
@@ -95,13 +95,13 @@ class SAM2Matte:
                 print(f"[SAM2] Loaded from torch.hub on {self.device}")
             except Exception as e:
                 print(f"[SAM2] torch.hub loading failed: {e}")
-                
+
         except Exception as e:
             print(f"[SAM2] Failed to load: {e}")
             print("[SAM2] Please install: pip install git+https://github.com/facebookresearch/segment-anything-2.git")
             self.model = None
             self.predictor = None
-    
+
     def _download_model(self):
         """下载 SAM2 模型"""
         model_dir = models_root() / "sam2-hiera-base-plus"
@@ -133,24 +133,24 @@ class SAM2Matte:
                 print(f"[SAM2] Download failed: {download_error}")
                 print("[SAM2] Please download manually from:")
                 print("  https://huggingface.co/facebook/sam2-hiera-base-plus")
-    
+
     def generate_mask(self, frame: np.ndarray, points: Optional[List[Tuple[int, int]]] = None,
                      labels: Optional[List[int]] = None) -> np.ndarray:
         """
         生成单帧分割 mask
-        
+
         Args:
             frame: RGB 帧
             points: 点击点坐标列表 [(x, y), ...]
             labels: 点标签 (1=前景, 0=背景)
-        
+
         Returns:
             分割 mask
         """
         if self.predictor is None and self.model is None:
             print("[SAM2] Model not available")
             return np.ones(frame.shape[:2], dtype=np.uint8)
-        
+
         try:
             if self.predictor is not None:
                 # 使用视频 predictor
@@ -158,21 +158,21 @@ class SAM2Matte:
             else:
                 # 使用普通模型
                 return self._predict_with_model(frame, points, labels)
-                
+
         except Exception as e:
             print(f"[SAM2] Inference failed: {e}")
             return np.ones(frame.shape[:2], dtype=np.uint8)
-    
+
     def _predict_with_predictor(self, frame: np.ndarray, points, labels) -> np.ndarray:
         """使用视频 predictor"""
         # 初始化状态
         self.predictor.init_state(frame)
-        
+
         # 添加点提示
         if points is not None and labels is not None:
             point_coords = np.array(points)
             point_labels = np.array(labels)
-            
+
             mask, scores, _ = self.predictor.add_new_points(
                 frame_idx=0,
                 obj_id=1,
@@ -182,20 +182,20 @@ class SAM2Matte:
         else:
             # 自动分割
             mask = self.predictor.predict(frame)
-        
+
         return mask.astype(np.uint8)
-    
+
     def _predict_with_model(self, frame: np.ndarray, points, labels) -> np.ndarray:
         """使用普通模型"""
         # 预处理
         frame_tensor = self._preprocess(frame)
-        
+
         with torch.no_grad():
             if points is not None and labels is not None:
                 # 使用点提示
                 point_coords = torch.tensor(points).unsqueeze(0).to(self.device)
                 point_labels = torch.tensor(labels).unsqueeze(0).to(self.device)
-                
+
                 masks, scores, _ = self.model.predict_torch(
                     point_coords=point_coords,
                     point_labels=point_labels,
@@ -205,27 +205,27 @@ class SAM2Matte:
             else:
                 # 自动分割
                 mask = self.model.predict(frame_tensor)
-        
+
         return (mask > 0.5).astype(np.uint8)
-    
+
     def track_video(self, frames: List[np.ndarray], init_mask: np.ndarray, cancel_check=None) -> List[np.ndarray]:
         """
         视频跟踪分割
-        
+
         Args:
             frames: RGB 帧列表
             init_mask: 首帧初始化 mask
-        
+
         Returns:
             每帧的 mask 列表
         """
         if self.predictor is None:
             print("[SAM2] Video predictor not available")
             return [init_mask] * len(frames)
-        
+
         try:
             masks = []
-            
+
             # 初始化视频状态
             for i, frame in enumerate(frames):
                 if cancel_check is not None and cancel_check():
@@ -237,28 +237,28 @@ class SAM2Matte:
                 else:
                     # 跟踪后续帧
                     mask = self.predictor.track(frame)
-                
+
                 masks.append(mask)
-            
+
             return masks
         except JobCancelledError:
             raise
         except Exception as e:
             print(f"[SAM2] Tracking failed: {e}")
             return [init_mask] * len(frames)
-    
+
     def _preprocess(self, frame: np.ndarray) -> torch.Tensor:
         """预处理帧"""
         frame = frame.astype(np.float32) / 255.0
         frame_tensor = torch.from_numpy(frame).permute(2, 0, 1).unsqueeze(0)
         frame_tensor = frame_tensor.to(self.device)
         return frame_tensor
-    
+
     def generate_sequence(self, frames: List[np.ndarray], progress_callback=None, cancel_check=None) -> List[np.ndarray]:
         """序列处理 - 返回 masks"""
         del progress_callback
         # 首帧自动生成 mask
         first_mask = self.generate_mask(frames[0])
-        
+
         # 跟踪视频
         return self.track_video(frames, first_mask, cancel_check=cancel_check)

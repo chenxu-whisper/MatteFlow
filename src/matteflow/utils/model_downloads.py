@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import os
+import urllib.request
 from pathlib import Path
 from typing import Callable
-import urllib.request
-
 
 Validator = Callable[[Path], tuple[bool, str | None]]
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402
 """
 MatteFlow CLI - 命令行抠图工具
 
@@ -16,7 +17,6 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
 from matteflow.cli_app import _configure_logging, _resolve_output_dir, build_parser, main
-
 
 __all__ = ["build_parser", "main", "_configure_logging", "_resolve_output_dir"]
 

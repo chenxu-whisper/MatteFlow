@@ -126,8 +126,8 @@ class MatAnyone2Processor:
 
         ckpt_path = _ensure_checkpoint(self._ckpt_path)
 
-        from .matanyone2.utils.get_default_model import get_matanyone2_model
         from .matanyone2.inference.inference_core import InferenceCore
+        from .matanyone2.utils.get_default_model import get_matanyone2_model
 
         # Enable TF32 for Ampere+ GPUs (RTX 30xx/40xx/50xx) — ~15-30% speedup
         torch.set_float32_matmul_precision('high')

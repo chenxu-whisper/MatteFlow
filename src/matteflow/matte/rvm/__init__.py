@@ -1,1 +1,1 @@
-from .model import MattingNetwork
+from .model import MattingNetwork as MattingNetwork

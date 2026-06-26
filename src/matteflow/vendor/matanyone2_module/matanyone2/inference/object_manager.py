@@ -1,4 +1,4 @@
-from typing import Union, List, Dict
+from typing import Dict, List, Union
 
 import torch
 from matanyone2.inference.object_info import ObjectInfo

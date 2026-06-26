@@ -1,6 +1,7 @@
 import math
+from typing import Optional, Tuple, Union
+
 import torch
-from typing import Optional, Union, Tuple
 
 
 # @torch.jit.script
@@ -27,7 +28,7 @@ def get_similarity(mk: torch.Tensor,
     ms = ms.flatten(start_dim=1).unsqueeze(2) if ms is not None else None
     qk = qk.flatten(start_dim=2)
     qe = qe.flatten(start_dim=2) if qe is not None else None
-    
+
     # query token selection based on temporal sparsity
     if uncert_mask is not None:
         uncert_mask = uncert_mask.flatten(start_dim=2)

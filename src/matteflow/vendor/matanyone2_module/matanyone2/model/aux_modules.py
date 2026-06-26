@@ -2,12 +2,12 @@
 For computing auxiliary outputs for auxiliary losses
 """
 from typing import Dict
-from omegaconf import DictConfig
+
 import torch
 import torch.nn as nn
-
 from matanyone2.model.group_modules import GConv2d
 from matanyone2.utils.tensor_utils import aggregate
+from omegaconf import DictConfig
 
 
 class LinearPredictor(nn.Module):
@@ -48,7 +48,7 @@ class AuxComputer(nn.Module):
         sensory_dim = cfg.model.sensory_dim
         embed_dim = cfg.model.embed_dim
 
-        if use_sensory_aux:  
+        if use_sensory_aux:
             self.sensory_aux = LinearPredictor(sensory_dim, embed_dim)
 
     def _aggregate_with_selector(self, logits: torch.Tensor, selector: torch.Tensor) -> torch.Tensor:
@@ -77,7 +77,7 @@ class AuxComputer(nn.Module):
                 selector.unsqueeze(2) if selector is not None else None)
 
         return aux_output
-    
+
     def compute_mask(self, aux_input: Dict[str, torch.Tensor],
                 selector: torch.Tensor) -> Dict[str, torch.Tensor]:
         # sensory = aux_input['sensory']

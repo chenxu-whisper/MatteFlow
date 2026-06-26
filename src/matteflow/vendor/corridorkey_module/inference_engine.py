@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 import logging
 import math
 import os
@@ -11,8 +12,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
-from .core.model_transformer import GreenFormer
 from .core import color_utils as cu
+from .core.model_transformer import GreenFormer
 
 # ── Single source of truth for inference parameter defaults ──
 # Every engine (CUDA, MLX) and the service layer import from here.
@@ -192,7 +193,7 @@ class CorridorKeyEngine:
             logger.debug(f"_get_vram_gb: torch.cuda failed: {e}")
         logger.debug("_get_vram_gb: all probes failed, returning 0")
         return 0.0
-        
+
     def _status(self, msg: str) -> None:
         """Emit status to UI callback and log."""
         logger.info(msg)
@@ -283,8 +284,8 @@ class CorridorKeyEngine:
             return self.model(inp_t, refiner_scale=refiner_scale_t)
 
     def _load_model(self):
-        import time as _time
         import logging as _logging
+        import time as _time
 
         def _diag(msg):
             """Force-flush diagnostic — visible in log file immediately."""
@@ -407,9 +408,9 @@ class CorridorKeyEngine:
                 # Frozen builds: if triton_windows .dist-info was missing,
                 # the runtime hook flagged it.  Patch the backends dict now.
                 if os.environ.get('_TRITON_PATCH_BACKENDS') == '1':
-                    from triton.backends import backends, Backend, _find_concrete_subclasses
-                    from triton.backends.driver import DriverBase
+                    from triton.backends import Backend, _find_concrete_subclasses, backends
                     from triton.backends.compiler import BaseBackend
+                    from triton.backends.driver import DriverBase
                     if 'nvidia' not in backends:
                         import triton.backends.nvidia.compiler as _nv_compiler
                         import triton.backends.nvidia.driver as _nv_driver
@@ -499,16 +500,16 @@ class CorridorKeyEngine:
         # 1. Inputs Check & Normalization
         if image.dtype == np.uint8:
             image = image.astype(np.float32) / 255.0
-            
+
         if mask_linear.dtype == np.uint8:
             mask_linear = mask_linear.astype(np.float32) / 255.0
-            
+
         h, w = image.shape[:2]
-        
+
         # Ensure Mask Shape
         if mask_linear.ndim == 2:
             mask_linear = mask_linear[:, :, np.newaxis]
-            
+
         # 2. Resize to Model Size
         # If input is linear, we resize in linear to preserve energy/highlights,
         # THEN convert to sRGB for the model.
@@ -533,23 +534,24 @@ class CorridorKeyEngine:
         # 4. Prepare Tensor
         inp_np = np.concatenate([img_norm, mask_resized], axis=-1) # [H, W, 4]
         inp_t = torch.from_numpy(inp_np.transpose((2, 0, 1))).float().unsqueeze(0).to(self.device)
-        
+
         # 5. Inference
         refiner_scale_t = inp_t.new_tensor(refiner_scale)
         with torch.autocast(device_type=self.device.type, dtype=torch.float16):
             out = self._forward_model(inp_t, refiner_scale_t)
-            
+
         pred_alpha = out['alpha']
         pred_fg = out['fg'] # Output is sRGB (Sigmoid)
-        
+
         # 6. Post-Process (Resize Back to Original Resolution)
         # We use Lanczos4 for high-quality resampling to minimize blur when going back to 4K/Original.
         res_alpha = pred_alpha[0].permute(1, 2, 0).float().cpu().numpy()
         res_fg = pred_fg[0].permute(1, 2, 0).float().cpu().numpy()
         res_alpha = cv2.resize(res_alpha, (w, h), interpolation=cv2.INTER_LANCZOS4)
         res_fg = cv2.resize(res_fg, (w, h), interpolation=cv2.INTER_LANCZOS4)
-        
-        if res_alpha.ndim == 2: res_alpha = res_alpha[:, :, np.newaxis]
+
+        if res_alpha.ndim == 2:
+            res_alpha = res_alpha[:, :, np.newaxis]
 
         # --- REFINER ADDITIVE GUARD ---
         # CorridorKey's refiner was trained to tighten rough green-screen
@@ -609,20 +611,20 @@ class CorridorKeyEngine:
         processed_rgba = np.concatenate([fg_premul_lin, processed_alpha], axis=-1)
 
         # ----------------------------
-        
+
         # 7. Composite (on Checkerboard) for checking
         # Generate Dark/Light Gray Checkerboard (in sRGB, convert to Linear)
         bg_srgb = cu.create_checkerboard(w, h, checker_size=128, color1=0.15, color2=0.55)
         bg_lin = cu.srgb_to_linear(bg_srgb)
-        
+
         if fg_is_straight:
-             comp_lin = cu.composite_straight(fg_despilled_lin, bg_lin, processed_alpha) 
+             comp_lin = cu.composite_straight(fg_despilled_lin, bg_lin, processed_alpha)
         else:
              # If premultiplied model, we shouldn't multiply again (though our pipeline forces straight)
              comp_lin = cu.composite_premul(fg_despilled_lin, bg_lin, processed_alpha)
-             
+
         comp_srgb = cu.linear_to_srgb(comp_lin)
-        
+
         logger.debug(f"process_frame: {h}x{w} in {time.monotonic() - t0:.3f}s")
 
         return {

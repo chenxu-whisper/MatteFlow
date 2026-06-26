@@ -1,7 +1,8 @@
+import timm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import timm
+
 
 class MLP(nn.Module):
     """
@@ -17,27 +18,27 @@ class MLP(nn.Module):
 class DecoderHead(nn.Module):
     def __init__(self, feature_channels=[112, 224, 448, 896], embedding_dim=256, output_dim=1):
         super().__init__()
-        
+
         # MLP layers to unify channel dimensions
         self.linear_c4 = MLP(input_dim=feature_channels[3], embed_dim=embedding_dim)
         self.linear_c3 = MLP(input_dim=feature_channels[2], embed_dim=embedding_dim)
         self.linear_c2 = MLP(input_dim=feature_channels[1], embed_dim=embedding_dim)
         self.linear_c1 = MLP(input_dim=feature_channels[0], embed_dim=embedding_dim)
-        
+
         # Fuse
         self.linear_fuse = nn.Conv2d(embedding_dim*4, embedding_dim, kernel_size=1, bias=False)
         self.bn = nn.BatchNorm2d(embedding_dim)
         self.relu = nn.ReLU(inplace=True)
-        
+
         # Predict
         self.dropout = nn.Dropout(0.1)
         self.classifier = nn.Conv2d(embedding_dim, output_dim, kernel_size=1)
 
     def forward(self, features):
         c1, c2, c3, c4 = features
-        
+
         n, _, h, w = c4.shape
-        
+
         # Resize to C1 size (which is H/4)
         _c4 = self.linear_c4(c4.flatten(2).transpose(1, 2)).transpose(1, 2).view(n, -1, c4.shape[2], c4.shape[3])
         _c4 = F.interpolate(_c4, size=c1.shape[2:], mode='bilinear', align_corners=False)
@@ -53,7 +54,7 @@ class DecoderHead(nn.Module):
         _c = self.linear_fuse(torch.cat([_c4, _c3, _c2, _c1], dim=1))
         _c = self.bn(_c)
         _c = self.relu(_c)
-        
+
         x = self.dropout(_c)
         x = self.classifier(x)
 
@@ -99,13 +100,13 @@ class CNNRefinerModule(nn.Module):
             nn.GroupNorm(8, hidden_channels),
             nn.ReLU(inplace=True)
         )
-        
+
         # Dilated Residual Blocks (RF Expansion)
         self.res1 = RefinerBlock(hidden_channels, dilation=1)
         self.res2 = RefinerBlock(hidden_channels, dilation=2)
         self.res3 = RefinerBlock(hidden_channels, dilation=4)
         self.res4 = RefinerBlock(hidden_channels, dilation=8)
-        
+
         # Final Projection (No Activation, purely additive logits)
         self.final = nn.Conv2d(hidden_channels, out_channels, kernel_size=1)
 
@@ -243,37 +244,37 @@ class CNNRefinerModule(nn.Module):
 class GreenFormer(nn.Module):
     def __init__(self, encoder_name='hiera_base_plus_224.mae_in1k_ft_in1k', in_channels=4, img_size=512, use_refiner=True):
         super().__init__()
-        
+
         # --- Encoder ---
         # Load Pretrained Hiera
         # 1. Create Target Model (512x512, Random Weights)
         # We use features_only=True, which wraps it in FeatureGetterNet
         print(f"Initializing {encoder_name} (img_size={img_size})...")
         self.encoder = timm.create_model(encoder_name, pretrained=False, features_only=True, img_size=img_size)
-        # We skip downloading/loading base weights because the user's checkpoint 
-        # (loaded immediately after this) contains all weights, including correctly 
+        # We skip downloading/loading base weights because the user's checkpoint
+        # (loaded immediately after this) contains all weights, including correctly
         # trained/sized PosEmbeds. This keeps the project offline-capable using only local assets.
         print("Skipped downloading base weights (relying on custom checkpoint).")
-        
+
         # Patch First Layer for 4 channels
         if in_channels != 3:
             self._patch_input_layer(in_channels)
-            
+
         # Get feature info
         # Verified Hiera Base Plus channels: [112, 224, 448, 896]
         # We can try to fetch dynamically
         try:
             feature_channels = self.encoder.feature_info.channels()
-        except:
+        except Exception:
             feature_channels = [112, 224, 448, 896]
         print(f"Feature Channels: {feature_channels}")
-        
+
         # --- Decoders ---
         embedding_dim = 256
-        
+
         # Alpha Decoder (Outputs 1 channel)
         self.alpha_decoder = DecoderHead(feature_channels, embedding_dim, output_dim=1)
-        
+
         # Foreground Decoder (Outputs 3 channels)
         self.fg_decoder = DecoderHead(feature_channels, embedding_dim, output_dim=3)
 
@@ -293,7 +294,7 @@ class GreenFormer(nn.Module):
         Copies existing RGB weights and initializes extras to zero.
         """
         # Hiera: self.encoder.model.patch_embed.proj
-        
+
         try:
             patch_embed = self.encoder.model.patch_embed.proj
         except AttributeError:
@@ -301,27 +302,27 @@ class GreenFormer(nn.Module):
             patch_embed = self.encoder.patch_embed.proj
         weight = patch_embed.weight.data # [Out, 3, K, K]
         bias = patch_embed.bias.data if patch_embed.bias is not None else None
-        
+
         new_in_channels = in_channels
         out_channels, _, k, k = weight.shape
-        
+
         # Create new conv
         new_conv = nn.Conv2d(new_in_channels, out_channels, kernel_size=k, stride=patch_embed.stride, padding=patch_embed.padding, bias=(bias is not None))
-        
+
         # Copy weights
         new_conv.weight.data[:, :3, :, :] = weight
         # Initialize new channels to 0 (Weight Patching)
         new_conv.weight.data[:, 3:, :, :] = 0.0
-        
+
         if bias is not None:
             new_conv.bias.data = bias
-            
+
         # Replace in module
         try:
              self.encoder.model.patch_embed.proj = new_conv
         except AttributeError:
              self.encoder.patch_embed.proj = new_conv
-        
+
         print(f"Patched input layer: 3 channels -> {in_channels} channels (Extra initialized to 0)")
 
     def forward(self, x, refiner_scale=None):

@@ -65,7 +65,7 @@ preview.webm
 frames.zip
 
 # Models and checkpoints (large local files)
-models/
+/models/
 checkpoints/
 *.pth
 *.pt

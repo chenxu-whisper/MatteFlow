@@ -40,7 +40,7 @@ def resolve_gvm_model_base(models_root: Path) -> Optional[Path]:
 
 class GVMMatte:
     """Generative Video Matting 引擎"""
-    
+
     def __init__(self, config: MattingConfig):
         self.config = config
         self._ensure_cuda_available()
@@ -51,7 +51,7 @@ class GVMMatte:
     def _ensure_cuda_available(self) -> None:
         if not torch.cuda.is_available():
             raise RuntimeError("GVM 仅支持 CUDA GPU。当前 PyTorch 环境未检测到可用 CUDA，请安装 CUDA 版 PyTorch。")
-    
+
     def _load_model(self):
         """加载 GVM 模型"""
         try:
@@ -79,40 +79,40 @@ class GVMMatte:
             self._force_cpu_float32_runtime()
             logger.info("Loaded GVM from vendored MatteFlow package on %s", self.device)
 
-        except Exception as e:
+        except Exception:
             logger.exception("Failed to load GVM runtime")
             logger.warning("GVM requires the vendored runtime and diffusers dependencies")
             self.model = None
-    
+
     def generate(self, frames: List[np.ndarray], hints: Optional[np.ndarray] = None) -> List[np.ndarray]:
         """
         生成 Alpha Matte — 注意：后处理由调用方统一处理
-        
+
         Args:
             frames: RGB 帧列表
             hints: 可选的 hint mask (首帧)
-        
+
         Returns:
             Alpha 列表
         """
         if self.model is None:
             logger.info("Model not available, returning empty alphas for %s frames", len(frames))
             return [np.ones(f.shape[:2], dtype=np.float32) * 0.5 for f in frames]
-        
+
         try:
             del hints  # Current GVM integration does not consume per-frame hints.
             logger.info("Starting GVM sequence inference for %s frames", len(frames))
             return self._run_sequence_inference(frames)
-            
-        except Exception as e:
+
+        except Exception:
             logger.exception("GVM inference failed")
             return [np.ones(f.shape[:2], dtype=np.float32) * 0.5 for f in frames]
-    
+
     def _apply_chroma_key_postprocess(self, alphas: List[np.ndarray]) -> List[np.ndarray]:
         """应用 Chroma Key 后处理参数 — 对齐 EZ-CorridorKey"""
         from .chroma_key_postprocess import apply_chroma_key_postprocess
         return apply_chroma_key_postprocess(alphas, self.config)
-    
+
     def _force_cpu_float32_runtime(self) -> None:
         """Diffusers pipelines cannot reliably run in float16 on CPU."""
         if self.model is None or self.device.type != "cpu":
@@ -209,7 +209,7 @@ class GVMMatte:
 
             logger.info("Completed GVM sequence inference with %s matte frames", len(alphas))
             return alphas
-    
+
     def generate_sequence(self, frames: List[np.ndarray]) -> List[np.ndarray]:
         """序列处理"""
         return self.generate(frames)

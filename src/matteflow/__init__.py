@@ -12,8 +12,8 @@ MatteFlow - High-quality video, sequence, and image matting engine
 __version__ = "0.1.0"
 __author__ = "ByteDance"
 
+from .config import BackgroundMode, MattingConfig, QualityMode
 from .pipeline import MattingPipeline
-from .config import MattingConfig, QualityMode, BackgroundMode
 
 __all__ = [
     "MattingPipeline",

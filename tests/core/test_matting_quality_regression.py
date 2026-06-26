@@ -11,7 +11,7 @@ from matteflow.evaluation.matting_quality_regression import (  # noqa: E402
 )
 
 
-def test_manifest_loads_samples():
+def test_manifest_loads_quality_regression_sample():
     manifest = MattingQualityRegressionManifest.from_path(
         Path("tests/fixtures/matting_quality/manifest.json")
     )

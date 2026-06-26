@@ -7,8 +7,12 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from .model_paths import model_file, models_root, resolve_snapshot_model_dir, resolve_snapshot_repo_dir
-
+from .model_paths import (
+    model_file,
+    models_root,
+    resolve_snapshot_model_dir,
+    resolve_snapshot_repo_dir,
+)
 
 DIRECT_MODEL_MIN_BYTES = {
     "matanyone2.pth": 50 * 1024 * 1024,
@@ -53,38 +57,38 @@ def validate_hf_repo_dir(path: Path) -> tuple[bool, str | None]:
 
 class ModelChecker:
     """检查 AI 模型是否可用"""
-    
+
     def __init__(self):
         self.cache_dir = models_root()
         self.matteflow_dir = models_root()
-        
+
     def check_all_models(self) -> Dict[str, Dict]:
         """检查所有模型状态"""
         results = {}
-        
+
         # 1. GVM
         results["gvm"] = self._check_gvm()
-        
+
         # 2. MatAnyone2
         results["matanyone2"] = self._check_matanyone2()
-        
+
         # 3. SAM2
         results["sam2"] = self._check_sam2()
-        
+
         # 4. BiRefNet
         results["birefnet"] = self._check_birefnet()
-        
+
         # 5. CorridorKey
         results["corridorkey"] = self._check_corridorkey()
-        
+
         # 6. RVM
         results["rvm"] = self._check_rvm()
-        
+
         # 7. rembg
         results["rembg"] = self._check_rembg()
-        
+
         return results
-    
+
     def _check_gvm(self) -> Dict:
         """检查 GVM"""
         model_dir = resolve_snapshot_model_dir(
@@ -126,7 +130,7 @@ class ModelChecker:
             "auto_download": False,
             "reason": reason,
         }
-    
+
     def _check_matanyone2(self) -> Dict:
         """检查 MatAnyone2"""
         model_path = model_file("matanyone2.pth")
@@ -146,7 +150,7 @@ class ModelChecker:
             "auto_download": False,
             "reason": reason
         }
-    
+
     def _check_sam2(self) -> Dict:
         """检查 SAM2"""
         model_path = resolve_snapshot_repo_dir(self.cache_dir, "facebook/sam2-hiera-base-plus")
@@ -168,7 +172,7 @@ class ModelChecker:
             "auto_download": True,
             "reason": reason
         }
-    
+
     def _check_birefnet(self) -> Dict:
         """检查 BiRefNet"""
         model_path = resolve_snapshot_repo_dir(self.cache_dir, "ZhengPeng7/BiRefNet")
@@ -190,7 +194,7 @@ class ModelChecker:
             "auto_download": True,
             "reason": reason
         }
-    
+
     def _check_corridorkey(self) -> Dict:
         """检查 CorridorKey"""
         model_path = model_file("corridorkey.pth")
@@ -210,7 +214,7 @@ class ModelChecker:
             "auto_download": False,
             "reason": reason
         }
-    
+
     def _check_rvm(self) -> Dict:
         """检查 RVM"""
         model_path = model_file("rvm_mobilenetv3.pth")
@@ -223,12 +227,12 @@ class ModelChecker:
             "auto_download": True,
             "reason": reason
         }
-    
+
     def _check_rembg(self) -> Dict:
         """检查 rembg"""
         available = importlib.util.find_spec("rembg") is not None
         reason = None if available else "未安装 rembg 包"
-        
+
         return {
             "name": "rembg",
             "available": available,
@@ -237,7 +241,7 @@ class ModelChecker:
             "auto_download": True,
             "reason": reason
         }
-    
+
     def get_available_models(self) -> List[str]:
         """获取可用模型列表"""
         results = self.check_all_models()
@@ -257,15 +261,15 @@ class ModelChecker:
                 "auto_download": bool(info["auto_download"]),
             }
         return facts
-    
+
     def get_ui_choices(self) -> List[Tuple[str, str]]:
         """获取 UI 选项列表"""
         results = self.check_all_models()
         choices = []
-        
+
         # 按优先级排序
         priority_order = ["gvm", "matanyone2", "corridorkey", "sam2", "birefnet", "rvm", "rembg"]
-        
+
         for model_name in priority_order:
             if model_name in results:
                 info = results[model_name]
@@ -277,20 +281,20 @@ class ModelChecker:
                     # 不可用模型（禁用）
                     label = f"❌ {info['name']} ({info['reason'] or '未安装'})"
                     # 不添加到选项中，或添加为禁用状态
-        
+
         # 添加传统算法
         choices.append(("📐 传统算法", "traditional"))
-        
+
         return choices
-    
+
     def print_status(self):
         """打印模型状态"""
         print("=" * 70)
         print("[STATUS] AI 模型状态检查")
         print("=" * 70)
-        
+
         results = self.check_all_models()
-        
+
         for model_name, info in results.items():
             status = "[OK] 可用" if info["available"] else "[FAIL] 不可用"
             print(f"\n{info['name']}")
@@ -300,8 +304,8 @@ class ModelChecker:
             if info["reason"]:
                 print(f"  原因: {info['reason']}")
             if info["auto_download"]:
-                print(f"  自动下载: 支持")
-        
+                print("  自动下载: 支持")
+
         print("\n" + "=" * 70)
         available = self.get_available_models()
         print(f"可用模型: {len(available)}/7")

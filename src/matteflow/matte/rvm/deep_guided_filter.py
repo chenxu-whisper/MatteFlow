@@ -20,28 +20,28 @@ class DeepGuidedFilterRefiner(nn.Module):
             nn.ReLU(True),
             nn.Conv2d(hid_channels, 4, kernel_size=1, bias=True)
         )
-        
+
     def forward_single_frame(self, fine_src, base_src, base_fgr, base_pha, base_hid):
         fine_x = torch.cat([fine_src, fine_src.mean(1, keepdim=True)], dim=1)
         base_x = torch.cat([base_src, base_src.mean(1, keepdim=True)], dim=1)
         base_y = torch.cat([base_fgr, base_pha], dim=1)
-        
+
         mean_x = self.box_filter(base_x)
         mean_y = self.box_filter(base_y)
         cov_xy = self.box_filter(base_x * base_y) - mean_x * mean_y
         var_x  = self.box_filter(base_x * base_x) - mean_x * mean_x
-        
+
         A = self.conv(torch.cat([cov_xy, var_x, base_hid], dim=1))
         b = mean_y - A * mean_x
-        
+
         H, W = fine_src.shape[2:]
         A = F.interpolate(A, (H, W), mode='bilinear', align_corners=False)
         b = F.interpolate(b, (H, W), mode='bilinear', align_corners=False)
-        
+
         out = A * fine_x + b
         fgr, pha = out.split([3, 1], dim=1)
         return fgr, pha
-    
+
     def forward_time_series(self, fine_src, base_src, base_fgr, base_pha, base_hid):
         B, T = fine_src.shape[:2]
         fgr, pha = self.forward_single_frame(
@@ -53,7 +53,7 @@ class DeepGuidedFilterRefiner(nn.Module):
         fgr = fgr.unflatten(0, (B, T))
         pha = pha.unflatten(0, (B, T))
         return fgr, pha
-    
+
     def forward(self, fine_src, base_src, base_fgr, base_pha, base_hid):
         if fine_src.ndim == 5:
             return self.forward_time_series(fine_src, base_src, base_fgr, base_pha, base_hid)

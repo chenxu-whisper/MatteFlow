@@ -24,7 +24,7 @@ class HybridMatte:
     - 绿幕：RVM AI 为主
     - 黑底：传统算法 + AI 辅助增强
     """
-    
+
     def __init__(self, config: MattingConfig):
         self.config = config
         self.last_active_ai_model = None
@@ -43,13 +43,13 @@ class HybridMatte:
         self.corridorkey = None
         self.green_matte = None
         self.black_matte = None
-        
+
         # 尝试加载 AI 模型（仅在 use_ai=True 时）
         if config.use_ai:
             # 根据用户选择强制加载指定模型
             ai_model = getattr(config, 'ai_model', 'auto')
             logger.info("Requested AI model: %s", ai_model)
-            
+
             if ai_model == "gvm":
                 self._load_gvm(config)
             elif ai_model == "matanyone2":
@@ -69,14 +69,14 @@ class HybridMatte:
                 self._load_auto(config)
         else:
             logger.info("AI disabled, using traditional algorithms only")
-        
+
         # 传统算法备用
         from .black_background_matte import BlackBackgroundMatte
         from .green_screen_matte import GreenScreenMatte
 
         self.green_matte = GreenScreenMatte(config)
         self.black_matte = BlackBackgroundMatte(config)
-    
+
     def _load_gvm(self, config):
         """加载 GVM"""
         try:
@@ -89,7 +89,7 @@ class HybridMatte:
         except Exception as e:
             logger.exception("GVM loading failed")
             raise RuntimeError(f"GVM loading failed: {e}")
-    
+
     def _load_matanyone2(self, config):
         """加载 MatAnyone2"""
         try:
@@ -102,7 +102,7 @@ class HybridMatte:
         except Exception as e:
             logger.exception("MatAnyone2 loading failed")
             raise RuntimeError(f"MatAnyone2 loading failed: {e}")
-    
+
     def _load_corridorkey(self, config):
         """加载 CorridorKey"""
         try:
@@ -115,7 +115,7 @@ class HybridMatte:
         except Exception as e:
             logger.exception("CorridorKey loading failed")
             raise RuntimeError(f"CorridorKey loading failed: {e}")
-    
+
     def _load_birefnet(self, config):
         """加载 BiRefNet"""
         try:
@@ -128,7 +128,7 @@ class HybridMatte:
         except Exception as e:
             logger.exception("BiRefNet loading failed")
             raise RuntimeError(f"BiRefNet loading failed: {e}")
-    
+
     def _load_rvm(self, config):
         """加载 RVM"""
         try:
@@ -141,7 +141,7 @@ class HybridMatte:
         except Exception as e:
             logger.exception("RVM loading failed")
             raise RuntimeError(f"RVM loading failed: {e}")
-    
+
     def _load_rembg(self, config):
         """加载 rembg"""
         try:
@@ -154,7 +154,7 @@ class HybridMatte:
         except Exception as e:
             logger.exception("rembg loading failed")
             raise RuntimeError(f"rembg loading failed: {e}")
-    
+
     def _load_sam2(self, config):
         """加载 SAM2"""
         try:
@@ -167,7 +167,7 @@ class HybridMatte:
         except Exception as e:
             logger.exception("SAM2 loading failed")
             raise RuntimeError(f"SAM2 loading failed: {e}")
-    
+
     def _load_auto(self, config):
         """自动加载：按优先级尝试"""
         # 1. 优先加载 GVM
@@ -181,7 +181,7 @@ class HybridMatte:
                 self.gvm = None
         except Exception as e:
             logger.warning("GVM not available for auto selection: %s", e)
-        
+
         # 2. 加载 MatAnyone2
         try:
             from .matanyone2_matte import MatAnyone2Matte
@@ -193,7 +193,7 @@ class HybridMatte:
                 self.matanyone2 = None
         except Exception as e:
             logger.warning("MatAnyone2 not available for auto selection: %s", e)
-        
+
         # 3. 加载 SAM2
         try:
             from .sam2_matte import SAM2Matte
@@ -205,7 +205,7 @@ class HybridMatte:
                 self.sam2 = None
         except Exception as e:
             logger.warning("SAM2 not available for auto selection: %s", e)
-        
+
         # 4. 加载 CorridorKey
         try:
             from .corridorkey_matte import CorridorKeyMatte
@@ -217,7 +217,7 @@ class HybridMatte:
                 self.corridorkey = None
         except Exception as e:
             logger.warning("CorridorKey not available for auto selection: %s", e)
-        
+
         # 5. 回退到 rembg
         try:
             from .rembg_matte import RembgMatte
@@ -229,7 +229,7 @@ class HybridMatte:
                 self.rembg = None
         except Exception as e:
             logger.warning("rembg not available for auto selection: %s", e)
-        
+
         # 6. 回退到 BiRefNet
         try:
             from .birefnet_matte import BiRefNetMatte
@@ -241,7 +241,7 @@ class HybridMatte:
                 self.birefnet = None
         except Exception as e:
             logger.warning("BiRefNet not available for auto selection: %s", e)
-        
+
         # 7. 最后回退到 RVM
         try:
             from .rvm_matte import RVMMatte
@@ -253,14 +253,14 @@ class HybridMatte:
                 self.rvm = None
         except Exception as e:
             logger.warning("RVM not available for auto selection: %s", e)
-        
+
         # 传统算法备用（始终加载）
         from .black_background_matte import BlackBackgroundMatte
         from .green_screen_matte import GreenScreenMatte
 
         self.green_matte = GreenScreenMatte(config)
         self.black_matte = BlackBackgroundMatte(config)
-    
+
     @staticmethod
     def _check_cancelled(cancel_check) -> None:
         if cancel_check is not None and cancel_check():
@@ -456,7 +456,7 @@ class HybridMatte:
                 "sam2": self.sam2,
             },
         )
-    
+
     def _green_screen_matte(self, frames: List[np.ndarray], progress_callback, cancel_check=None) -> List[np.ndarray]:
         """绿幕抠图 - 修复：传统算法为主，AI 仅辅助边缘细化"""
         logger.info(
@@ -465,10 +465,10 @@ class HybridMatte:
             self.config.ai_enhance,
             getattr(self.config, "ai_model", "auto"),
         )
-        
+
         # 绿幕场景：传统算法效果通常更好，AI 容易误抠白色/浅色区域
         # 策略：传统算法生成基础 alpha，AI 只用于边缘细化（如果启用 AI 增强）
-        
+
         # 1. 传统算法生成基础 alpha（更可靠）
         logger.info("Using traditional green screen as base")
         base_alphas = []
@@ -478,11 +478,11 @@ class HybridMatte:
             base_alphas.append(alpha)
             if progress_callback and i % max(1, len(frames) // 20) == 0:
                 progress_callback(i, len(frames))
-        
+
         # 2. AI 增强模式：仅用于边缘细化（不是替代传统算法）
         if self.config.ai_enhance:
             ai_engine = None
-            
+
             # 优先使用 GVM (Generative Video Matting)
             if self.gvm is not None and self.gvm.model is not None:
                 ai_engine = self.gvm
@@ -514,14 +514,14 @@ class HybridMatte:
                 ai_engine = self.rvm
                 self.last_active_ai_model = "rvm"
                 logger.info("Applying RVM edge refinement")
-            
+
             if ai_engine is not None:
                 refined_alphas = []
                 for i, (frame, base_alpha) in enumerate(zip(frames, base_alphas)):
                     self._check_cancelled(cancel_check)
                     # 只在边缘区域用 AI 辅助
                     edge_mask = (base_alpha > 0.1) & (base_alpha < 0.9)
-                    
+
                     if np.any(edge_mask):
                         # 用 AI 生成边缘 alpha
                         ai_alpha = self._generate_single_frame_with_engine(
@@ -529,27 +529,27 @@ class HybridMatte:
                             frame,
                             cancel_check=cancel_check,
                         )
-                        
+
                         # 融合策略：
                         # - 核心前景 (alpha > 0.8)：传统算法（保护白色/毛发）
                         # - 边缘区域：传统 70% + AI 30%（AI 辅助平滑边缘）
                         # - 背景 (alpha < 0.1)：透明
                         result = base_alpha.copy()
-                        
+
                         # 只在边缘区域混合 AI
                         blend = 0.3  # AI 占比 30%，传统占 70%
                         result[edge_mask] = base_alpha[edge_mask] * (1 - blend) + ai_alpha[edge_mask] * blend
-                        
+
                         # 保护高置信度区域不被 AI 破坏
                         fg_mask = base_alpha > 0.9
                         result[fg_mask] = base_alpha[fg_mask]  # 完全用传统算法
-                        
+
                         refined_alphas.append(np.clip(result, 0, 1))
                     else:
                         refined_alphas.append(base_alpha)
-                
+
                 return refined_alphas
-        
+
         # 纯 AI 模式：根据用户选择的模型优先使用
         ai_alphas = None
         if self.config.use_ai:
@@ -568,7 +568,7 @@ class HybridMatte:
                     cancel_check,
                 )
                 self.last_active_ai_model = ai_name
-        
+
         if ai_alphas is not None:
             semantic_subject_alphas = self._generate_green_screen_semantic_subject_alphas(
                 ai_name,
@@ -585,7 +585,7 @@ class HybridMatte:
             # 应用 Chroma Key 后处理
             from .chroma_key_postprocess import apply_chroma_key_postprocess
             return apply_chroma_key_postprocess(ai_alphas, self.config)
-        
+
         return base_alphas
 
     def _generate_green_screen_semantic_subject_alphas(
@@ -1921,18 +1921,18 @@ class HybridMatte:
             & (b >= r - 5.0)
         )
         return (~screen_green) & neutral_soft & (soft_bright | soft_midtone)
-    
+
     def _black_background_matte(self, frames: List[np.ndarray], progress_callback, cancel_check=None) -> List[np.ndarray]:
         """
         黑底抠图 - 传统算法 + AI 边缘增强
-        
+
         策略：
         1. 传统算法生成基础 alpha（保留暗部粒子/辉光）
         2. AI 辅助边缘细化（如果有 RVM）
         3. 融合两者优势
         """
         logger.info("Using hybrid black background matting for %s frames", len(frames))
-        
+
         # 1. 传统算法生成基础 alpha
         base_alphas = []
         for i, frame in enumerate(frames):
@@ -1941,7 +1941,7 @@ class HybridMatte:
             base_alphas.append(alpha)
             if progress_callback and i % max(1, len(frames) // 20) == 0:
                 progress_callback(i, len(frames))
-        
+
         # 2. 如果有 RVM，用 AI 做边缘细化
         if self.rvm is not None and self.rvm.model is not None:
             logger.info("Applying RVM edge refinement for black background")
@@ -1950,7 +1950,7 @@ class HybridMatte:
                 self._check_cancelled(cancel_check)
                 ai_alphas.append(self.rvm.generate(frame))
             return self._merge_black_background_effects(base_alphas, ai_alphas, frames)
-        
+
         return base_alphas
 
     def _merge_black_background_effects(

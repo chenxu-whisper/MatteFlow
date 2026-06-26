@@ -16,7 +16,7 @@ class ObjectInfo:
         return hash(self.id)
 
     def __eq__(self, other):
-        if type(other) == int:
+        if isinstance(other, int):
             return self.id == other
         return self.id == other.id
 

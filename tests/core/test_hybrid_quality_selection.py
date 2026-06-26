@@ -7,8 +7,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from matteflow.config import BackgroundMode, MattingConfig  # noqa: E402
-from matteflow.matte.hybrid_matte import HybridMatte  # noqa: E402
 from matteflow.matte.candidates.matanyone2 import MatAnyone2CandidateGenerator  # noqa: E402
+from matteflow.matte.hybrid_matte import HybridMatte  # noqa: E402
 
 
 def test_hybrid_matte_delegates_to_quality_driven_matte_when_enabled():

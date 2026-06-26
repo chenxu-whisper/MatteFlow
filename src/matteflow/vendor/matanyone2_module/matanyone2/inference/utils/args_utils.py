@@ -1,4 +1,5 @@
 import logging
+
 from omegaconf import DictConfig
 
 log = logging.getLogger()

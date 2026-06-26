@@ -1,5 +1,6 @@
-from typing import Dict, List, Optional, Literal
 from collections import defaultdict
+from typing import Dict, List, Literal, Optional
+
 import torch
 
 

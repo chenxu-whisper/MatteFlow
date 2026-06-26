@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 """
 用法:
     python scripts/web_gui.py
@@ -17,16 +18,17 @@ import inspect
 import logging
 import shutil
 import tempfile
-from threading import RLock
 import time
 import zipfile
+from threading import RLock
 from uuid import uuid4
+
 import cv2
-import numpy as np
 import gradio as gr
+import numpy as np
 from PIL import Image
 
-from matteflow import MattingPipeline, MattingConfig, QualityMode, BackgroundMode
+from matteflow import BackgroundMode, MattingConfig, MattingPipeline, QualityMode
 from matteflow.auto_params import apply_suggestion, suggest_input_params
 from matteflow.diagnostics import (
     DiagnosticReport,
@@ -948,7 +950,7 @@ def process_video(
         quality,
         use_ai,
     )
-    
+
     logger.info(
         "GUI key config: screen_color=%s key_strength=%s clip_black=%s clip_white=%s "
         "shrink_grow=%s edge_blur=%s output_fg=%s output_matte=%s output_comp=%s output_processed=%s",
@@ -963,7 +965,7 @@ def process_video(
         config.output_comp,
         config.output_processed,
     )
-    
+
     try:
         def on_progress(current, total, stage):
             ratio = (current / total) if total > 0 else 0
@@ -990,8 +992,6 @@ def process_video(
                 return None, None, _queued_status(queue, job), None, None, 0, None
             job = request_job
 
-        preview_input = None
-        preview_output = None
 
         if job.status == JobStatus.FAILED:
             error_message = job.error_message or "processing failed"
@@ -1051,7 +1051,7 @@ def process_video(
                     session_id=session_id,
                 )
                 logger.info("Copied preview video to Gradio temp path: %s", preview_video)
-            except Exception as e:
+            except Exception:
                 # 如果复制失败,直接使用原路径
                 preview_video = str(preview_path.resolve())
                 logger.warning("Failed to copy preview to Gradio temp path, using original preview: %s", preview_video)
@@ -1131,7 +1131,7 @@ def _load_input_preview_frame(input_path: Path):
 
 def _create_preview_frames(output_dir, input_path):
     """创建首帧预览对比图 - 支持子目录结构
-    
+
     优先使用 Comp (预乘合成，背景黑色) 或 Processed (RGBA)
     避免使用 FG (未预乘，背景仍是绿色)
     """
@@ -1291,7 +1291,7 @@ def _find_transparent_png_download(output_dir, session_id=None):
 
 def _create_preview_video(output_dir, preview_path, preview_quality_mode="fast"):
     """创建带棋盘格背景的预览视频 - 使用 imageio 确保浏览器兼容
-    
+
     优先使用 Comp (预乘合成，背景黑色) 或 Processed (RGBA)
     避免使用 FG (未预乘，背景仍是绿色)
     """

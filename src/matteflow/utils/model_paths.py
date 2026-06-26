@@ -93,25 +93,3 @@ def resolve_snapshot_model_dir(
             return resolve_snapshot_model_dir(fallback_root, repo_id, required_subdirs)
 
     return None
-
-
-def resolve_snapshot_repo_dir(root: Path, repo_id: str) -> Optional[Path]:
-    flat_dir = root / repo_id.split("/")[-1]
-    if flat_dir.is_dir():
-        return flat_dir
-
-    namespace, name = repo_id.split("/", 1)
-    snapshots = root / f"models--{namespace}--{name}" / "snapshots"
-    if snapshots.is_dir():
-        for path in snapshots.iterdir():
-            if path.is_dir():
-                return path
-
-    current_root = project_root()
-    main_root = _main_project_root(current_root)
-    if main_root is not None:
-        fallback_root = main_root / "models"
-        if fallback_root != root:
-            return resolve_snapshot_repo_dir(fallback_root, repo_id)
-
-    return None

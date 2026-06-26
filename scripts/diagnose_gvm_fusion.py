@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402
 """Generate before/after diagnostics for GVM green-screen fusion."""
 
 from __future__ import annotations
 
 import json
 import sys
-from pathlib import Path
 from collections import Counter
+from pathlib import Path
 
 import cv2
 import numpy as np

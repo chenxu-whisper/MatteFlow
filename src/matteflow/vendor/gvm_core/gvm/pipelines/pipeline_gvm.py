@@ -1,24 +1,20 @@
 import inspect
+import os
+from typing import Dict, Union
+
+import numpy as np
 import torch
 import tqdm
-import numpy as np
 from diffusers import DiffusionPipeline
-from diffusers.utils import (
-    BaseOutput, 
-    USE_PEFT_BACKEND,     
-    is_peft_available,
-    is_peft_version,
-    is_torch_version,
-    logging
-)
 from diffusers.loaders.lora_pipeline import (
-    _LOW_CPU_MEM_USAGE_DEFAULT_LORA,
-    StableDiffusionLoraLoaderMixin
+    StableDiffusionLoraLoaderMixin,
+)
+from diffusers.utils import (
+    BaseOutput,
+    logging,
 )
 from peft import LoraConfig, LoraModel, set_peft_model_state_dict
-import os
 
-from typing import Union, Dict
 logger = logging.get_logger(__name__)
 
 
@@ -28,15 +24,15 @@ class GVMLoraLoader(StableDiffusionLoraLoaderMixin):
         super().__init__(*args, **kwargs)
 
     def load_lora_weights(
-        self, 
-        pretrained_model_name_or_path_or_dict: Union[str, Dict[str, torch.Tensor]], 
-        adapter_name=None, 
+        self,
+        pretrained_model_name_or_path_or_dict: Union[str, Dict[str, torch.Tensor]],
+        adapter_name=None,
         hotswap: bool = False,
         **kwargs
     ):
 
         unet_lora_config = LoraConfig.from_pretrained(pretrained_model_name_or_path_or_dict)
-        checkpoint = os.path.join(pretrained_model_name_or_path_or_dict, f"pytorch_lora_weights.pt")
+        checkpoint = os.path.join(pretrained_model_name_or_path_or_dict, "pytorch_lora_weights.pt")
         unet_lora_ckpt = torch.load(checkpoint, weights_only=True)
         self.unet = LoraModel(self.unet, unet_lora_config, "default")
         set_peft_model_state_dict(self.unet, unet_lora_ckpt)
@@ -137,7 +133,7 @@ class GVMPipeline(DiffusionPipeline, GVMLoraLoader):
             class_labels=class_labels,
         ).sample
 
-    
+
     def single_infer(self, rgb, position_ids=None, num_inference_steps=None, class_labels=None, noise_type="gaussian"):
         rgb_latent = self.encode(rgb)
 
@@ -152,7 +148,7 @@ class GVMPipeline(DiffusionPipeline, GVMLoraLoader):
             timesteps = timesteps.long()
         else:
             raise NotImplementedError
-            
+
         image_embeddings = torch.zeros((noise_latent.shape[0], 1, 1024)).to(
             noise_latent
         )
@@ -179,7 +175,7 @@ class GVMPipeline(DiffusionPipeline, GVMLoraLoader):
 
         return noise_latent
 
-    
+
     def __call__(
         self,
         image,
@@ -196,7 +192,7 @@ class GVMPipeline(DiffusionPipeline, GVMLoraLoader):
 
         assert ensemble_size >= 1
         class_embedding = None
-        
+
         # (1, N, 3, H, W)
         image = image.unsqueeze(0)
         B, N = image.shape[:2]
@@ -233,7 +229,7 @@ class GVMPipeline(DiffusionPipeline, GVMLoraLoader):
                 key_frame_indices.append(min(N - 1, i + num_frames - 1))
 
             key_frame_indices = torch.tensor(key_frame_indices, device=rgb.device)
-            
+
             latent_all = None
             pre_latent = None
 
@@ -256,7 +252,7 @@ class GVMPipeline(DiffusionPipeline, GVMLoraLoader):
                     )
                     try:
                         latent_all[:, -num_overlap_frames:] = latent[:,:num_overlap_frames] * ratio + latent_all[:, -num_overlap_frames:] * (1 - ratio)
-                    except:
+                    except Exception:
                         num_overlap_frames = min(num_overlap_frames, latent.shape[1])
                         ratio = (
                                 torch.linspace(0, 1, num_overlap_frames)
@@ -285,7 +281,7 @@ class GVMPipeline(DiffusionPipeline, GVMLoraLoader):
 
         if alpha.dim() == 5:
             alpha = alpha.squeeze(0)
-        
+
         # (N, H, W, 3)
         image = image.squeeze(0)
 

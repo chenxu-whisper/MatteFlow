@@ -7,7 +7,6 @@ import tempfile
 import time
 from pathlib import Path
 
-
 GRADIO_PREVIEW_MAX_AGE_SECONDS = 3600
 
 

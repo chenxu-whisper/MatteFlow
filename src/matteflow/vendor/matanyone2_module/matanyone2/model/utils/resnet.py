@@ -3,8 +3,8 @@ resnet.py - A modified ResNet structure
 We append extra channels to the first conv by some network surgery
 """
 
-from collections import OrderedDict
 import math
+from collections import OrderedDict
 
 import torch
 import torch.nn as nn

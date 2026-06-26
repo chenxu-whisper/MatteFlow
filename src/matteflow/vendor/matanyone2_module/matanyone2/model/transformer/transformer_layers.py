@@ -1,12 +1,12 @@
 # Modified from PyTorch nn.Transformer
 
-from typing import List, Callable
+from typing import Callable, List
 
 import torch
-from torch import Tensor
 import torch.nn as nn
 import torch.nn.functional as F
 from matanyone2.model.channel_attn import CAResBlock
+from torch import Tensor
 
 
 class SelfAttention(nn.Module):

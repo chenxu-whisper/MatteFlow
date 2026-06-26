@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# ruff: noqa: E402
 # -*- coding: utf-8 -*-
 """
 使用方法：
@@ -153,7 +154,7 @@ def download_corridorkey():
 
         print("开始下载...")
         urllib.request.urlretrieve(url, model_path)
-        print(f"[OK] CorridorKey 下载完成！")
+        print("[OK] CorridorKey 下载完成！")
         return True
     except Exception as e:
         print(f"[ERROR] CorridorKey 下载失败: {e}")
@@ -178,7 +179,7 @@ def download_rvm():
 
         print("开始下载...")
         urllib.request.urlretrieve(url, model_path)
-        print(f"[OK] RVM 下载完成！")
+        print("[OK] RVM 下载完成！")
         return True
     except Exception as e:
         print(f"[ERROR] RVM 下载失败: {e}")

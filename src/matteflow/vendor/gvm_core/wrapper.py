@@ -1,9 +1,11 @@
+# ruff: noqa: E402
+import logging
 import os
 import os.path as osp
-import cv2
 import random
-import logging
 import time
+
+import cv2
 
 logger = logging.getLogger(__name__)
 from pathlib import Path
@@ -11,15 +13,21 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
-from torchvision.transforms import ToTensor, Resize, Compose
 from diffusers import AutoencoderKLTemporalDecoder, FlowMatchEulerDiscreteScheduler
+from torch.utils.data import DataLoader
+from torchvision.transforms import Compose, Resize, ToTensor
 from tqdm import tqdm
 
 # Relative imports from the internal gvm package
 # Assuming this file is inside gvm_core/
 from .gvm.pipelines.pipeline_gvm import GVMPipeline
-from .gvm.utils.inference_utils import VideoReader, VideoWriter, ImageSequenceReader, ImageSequenceWriter
+from .gvm.utils.inference_utils import (
+    ImageSequenceReader,
+    ImageSequenceWriter,
+    VideoReader,
+    VideoWriter,
+)
+
 try:
     from .gvm.models.unet_spatio_temporal_condition import UNetSpatioTemporalConditionModel
 except ModuleNotFoundError as exc:
@@ -63,7 +71,7 @@ def seed_all(seed: int = 0):
 def impad_multi(img, multiple=32):
     # img: (N, C, H, W)
     h, w = img.shape[2], img.shape[3]
-    
+
     target_h = int(np.ceil(h / multiple) * multiple)
     target_w = int(np.ceil(w / multiple) * multiple)
 
@@ -84,7 +92,7 @@ def sequence_collate_fn(examples):
     return {'rgb_values': rgb_values, 'rgb_names': rgb_names}
 
 class GVMProcessor:
-    def __init__(self, 
+    def __init__(self,
                  model_base=None,
                  unet_base=None,
                  lora_base=None,
@@ -104,23 +112,23 @@ class GVMProcessor:
                     "Vendored GVM weights not found. Set MATTEFLOW_GVM_WEIGHTS_DIR "
                     "or place weights under matteflow/vendor/gvm_core/weights."
                 )
-            
+
         self.model_base = model_base
         self.unet_base = unet_base
         self.lora_base = lora_base
-        
+
         if seed is None:
             seed = int(time.time())
         seed_all(seed)
-        
+
         logger.info(f"Loading GVM models from {model_base}...")
         self.vae = AutoencoderKLTemporalDecoder.from_pretrained(model_base, subfolder="vae", torch_dtype=self._dtype)
         self.scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(model_base, subfolder="scheduler")
-        
+
         unet_folder = unet_base if unet_base is not None else model_base
         self.unet = UNetSpatioTemporalConditionModel.from_pretrained(
-            unet_folder, 
-            subfolder="unet", 
+            unet_folder,
+            subfolder="unet",
             class_embed_type=None,
             torch_dtype=self._dtype,
             low_cpu_mem_usage=False,
@@ -131,10 +139,10 @@ class GVMProcessor:
             # Check if lora_base is None or points to valid path, otherwise try default
             if lora_base is None and osp.exists(osp.join(model_base, "unet")):
                  # Often lora weights are just the unet weights in this codebase based on demo.py usage
-                 pass 
+                 pass
             elif lora_base:
                 self.pipe.load_lora_weights(lora_base)
-                
+
         self.pipe = self.pipe.to(self.device, dtype=self._dtype)
 
         # MPS SDPA triggers Metal matmul assertion at non-trivial resolutions;
@@ -181,7 +189,7 @@ class GVMProcessor:
         input_path = Path(input_path)
         file_name = input_path.stem
         is_video = input_path.suffix.lower() in ['.mp4', '.mkv', '.gif', '.mov', '.avi']
-        
+
         # --- Determine Resolution & Upscaling ---
         if is_video:
             cap = cv2.VideoCapture(str(input_path))
@@ -202,7 +210,7 @@ class GVMProcessor:
                  img = cv2.imread(first_img_path, cv2.IMREAD_UNCHANGED)
             else:
                  img = cv2.imread(first_img_path)
-                 
+
             if img is not None:
                 orig_h, orig_w = img.shape[:2]
             else:
@@ -216,7 +224,6 @@ class GVMProcessor:
 
         target_h = orig_h
         if target_h < _base_res:
-            scale_ratio = _base_res / target_h
             target_h = _base_res
 
         # Calculate max resolution / long edge
@@ -244,13 +251,13 @@ class GVMProcessor:
 
         if is_video:
             reader = VideoReader(
-                str(input_path), 
+                str(input_path),
                 max_frames=max_frames,
                 transform=transform
             )
         else:
             reader = ImageSequenceReader(
-                str(input_path), 
+                str(input_path),
                 transform=transform
             )
 
@@ -258,15 +265,17 @@ class GVMProcessor:
         first_frame = reader[0]
         if isinstance(first_frame, dict):
              first_frame = first_frame['image']
-        
+
         current_upscaled_shape = list(first_frame.shape[1:]) # H, W
-        if current_upscaled_shape[0] % 2 != 0: current_upscaled_shape[0] -= 1
-        if current_upscaled_shape[1] % 2 != 0: current_upscaled_shape[1] -= 1
+        if current_upscaled_shape[0] % 2 != 0:
+            current_upscaled_shape[0] -= 1
+        if current_upscaled_shape[1] % 2 != 0:
+            current_upscaled_shape[1] -= 1
         current_upscaled_shape = tuple(current_upscaled_shape)
 
         # Output preparation
         fps = reader.frame_rate if hasattr(reader, 'frame_rate') else 24.0
-        
+
         if direct_output_dir:
             # Write directly to this folder
             os.makedirs(direct_output_dir, exist_ok=True)
@@ -281,10 +290,10 @@ class GVMProcessor:
             file_output_dir = osp.join(output_dir, file_name)
             os.makedirs(file_output_dir, exist_ok=True)
             logger.info(f"Processing {input_path} -> {file_output_dir}")
-            
+
             writer_alpha = VideoWriter(osp.join(file_output_dir, f"{file_name}_alpha.mp4"), frame_rate=fps) if write_video else None
             writer_alpha_seq = ImageSequenceWriter(osp.join(file_output_dir, "alpha_seq"), extension='png')
-        
+
         # Dataloader
         if is_video:
             dataloader = DataLoader(reader, batch_size=num_frames_per_batch)
@@ -361,12 +370,14 @@ class GVMProcessor:
             # survive export; only guard against tiny numerical overflow.
             alpha = alpha.clamp_(0.0, 1.0)
 
-            if writer_alpha: writer_alpha.write(alpha)
+            if writer_alpha:
+                writer_alpha.write(alpha)
             writer_alpha_seq.write(alpha, filenames=filenames)
 
         if skipped:
             logger.info(f"Checkpoint: skipped {skipped}/{total_batches} batches (frames already on disk)")
-        
-        if writer_alpha: writer_alpha.close()
+
+        if writer_alpha:
+            writer_alpha.close()
         writer_alpha_seq.close()
         logger.info(f"Finished {file_name}")

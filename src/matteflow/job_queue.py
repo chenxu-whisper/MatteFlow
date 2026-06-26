@@ -1,6 +1,7 @@
 """GPU job queue primitives for serial MatteFlow workloads."""
 
 from __future__ import annotations
+
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum

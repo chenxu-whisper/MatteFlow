@@ -1,11 +1,11 @@
 """输入解码模块"""
 
 import logging
+from pathlib import Path
+from typing import Dict, List, Tuple
 
 import cv2
 import numpy as np
-from pathlib import Path
-from typing import List, Tuple, Dict
 
 from ..errors import InputValidationError
 from .formats import IMAGE_EXTENSIONS
@@ -44,7 +44,7 @@ class VideoDecoder:
     def decode(self, video_path: Path) -> Tuple[List[np.ndarray], Dict]:
         """
         解码视频文件
-        
+
         Returns:
             frames: RGB 帧列表
             meta: 元信息字典
@@ -54,12 +54,12 @@ class VideoDecoder:
         if not cap.isOpened():
             logger.info("Failed to open video: path=%s", video_path)
             raise ValueError(f"Cannot open video: {video_path}")
-        
+
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
+
         frames = []
         while True:
             ret, frame = cap.read()
@@ -71,7 +71,7 @@ class VideoDecoder:
             # BGR -> RGB
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             frames.append(frame_rgb)
-        
+
         cap.release()
         logger.info(
             "Loaded video: path=%s width=%s height=%s fps=%.3f expected_frames=%s actual_frames=%s",
@@ -82,7 +82,7 @@ class VideoDecoder:
             total_frames,
             len(frames),
         )
-        
+
         meta = {
             "input_kind": "video",
             "width": width,
@@ -91,13 +91,13 @@ class VideoDecoder:
             "total_frames": total_frames,
             "actual_frames": len(frames),
         }
-        
+
         return frames, meta
 
 
 class SequenceDecoder:
     """序列帧解码器"""
-    
+
     SUPPORTED_EXTS = IMAGE_EXTENSIONS
 
     def __init__(self, max_frames: int | None = None):
@@ -108,11 +108,11 @@ class SequenceDecoder:
             f"Input {input_path} exceeds configured max_input_frames={self.max_frames}. "
             "Increase max_input_frames or split the input before processing."
         )
-    
+
     def decode(self, dir_path: Path) -> Tuple[List[np.ndarray], Dict]:
         """
         解码序列帧目录
-        
+
         Returns:
             frames: RGB 帧列表
             meta: 元信息字典
@@ -127,15 +127,15 @@ class SequenceDecoder:
         for ext in self.SUPPORTED_EXTS:
             image_files.extend(dir_path.glob(f"*{ext}"))
             image_files.extend(dir_path.glob(f"*{ext.upper()}"))
-        
+
         # 去重并排序
         image_files = sorted(list(set(image_files)))
         logger.info("Discovered image sequence files: path=%s discovered=%s", dir_path, len(image_files))
-        
+
         if not image_files:
             logger.info("No supported image files found in sequence directory: path=%s", dir_path)
             raise ValueError(f"No supported images found in {dir_path}")
-        
+
         frames = []
         loaded_files = []
         for img_path in image_files:
@@ -147,11 +147,11 @@ class SequenceDecoder:
                 self._raise_frame_limit(dir_path)
             frames.append(img)
             loaded_files.append(img_path)
-        
+
         if not frames:
             logger.info("Failed to load any sequence frames: path=%s discovered=%s", dir_path, len(image_files))
             raise ValueError(f"Failed to load any frames from {dir_path}")
-        
+
         height, width = frames[0].shape[:2]
         logger.info(
             "Loaded image sequence: path=%s frames=%s width=%s height=%s first=%s last=%s",
@@ -162,7 +162,7 @@ class SequenceDecoder:
             loaded_files[0].name,
             loaded_files[-1].name,
         )
-        
+
         meta = {
             "input_kind": "sequence",
             "width": width,
@@ -172,7 +172,7 @@ class SequenceDecoder:
             "actual_frames": len(frames),
             "source_files": [str(f.name) for f in loaded_files],
         }
-        
+
         return frames, meta
 
 

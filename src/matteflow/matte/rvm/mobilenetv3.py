@@ -1,7 +1,7 @@
 import torch
-from torch import nn
-from torchvision.models.mobilenetv3 import MobileNetV3, InvertedResidualConfig
+from torchvision.models.mobilenetv3 import InvertedResidualConfig, MobileNetV3
 from torchvision.transforms.functional import normalize
+
 
 class MobileNetV3LargeEncoder(MobileNetV3):
     def __init__(self, pretrained: bool = False):
@@ -25,17 +25,17 @@ class MobileNetV3LargeEncoder(MobileNetV3):
             ],
             last_channel=1280
         )
-        
+
         if pretrained:
             self.load_state_dict(torch.hub.load_state_dict_from_url(
                 'https://download.pytorch.org/models/mobilenet_v3_large-8738ca79.pth'))
 
         del self.avgpool
         del self.classifier
-        
+
     def forward_single_frame(self, x):
         x = normalize(x, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-        
+
         x = self.features[0](x)
         x = self.features[1](x)
         f1 = x
@@ -58,7 +58,7 @@ class MobileNetV3LargeEncoder(MobileNetV3):
         x = self.features[16](x)
         f4 = x
         return [f1, f2, f3, f4]
-    
+
     def forward_time_series(self, x):
         B, T = x.shape[:2]
         features = self.forward_single_frame(x.flatten(0, 1))
