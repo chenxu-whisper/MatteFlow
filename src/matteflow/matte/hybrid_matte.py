@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 
 from ..analysis.alpha_quality import AlphaQualityAnalyzer, AlphaQualityReport
+from ..analysis.background_analyzer import BackgroundAnalyzer
 from ..analysis.region_ownership import RegionOwnership
 from ..config import BackgroundMode, MattingConfig
 from .fusion_quality_gate import FusionCandidate, FusionQualityGate
@@ -368,6 +369,16 @@ class HybridMatte:
         progress_callback=None,
         cancel_check=None,
     ) -> List[np.ndarray]:
+        detected_mode = BackgroundAnalyzer().analyze(frames)
+        if detected_mode == BackgroundMode.GREEN_SCREEN:
+            self.black_matte.reset_effect_enhancement_history()
+            self.last_active_ai_model = "traditional_green_fallback"
+            logger.info("Unknown background fallback selected green screen by background analyzer")
+            return [
+                self.green_matte.generate(frame)
+                for frame in frames
+            ]
+
         green_alphas = []
         black_alphas = []
         for i, frame in enumerate(frames):
@@ -380,6 +391,7 @@ class HybridMatte:
         green_score = self._score_traditional_unknown_candidate(green_alphas)
         black_score = self._score_traditional_unknown_candidate(black_alphas)
         if green_score >= black_score:
+            self.black_matte.reset_effect_enhancement_history()
             self.last_active_ai_model = "traditional_green_fallback"
             logger.info(
                 "Unknown background fallback selected green screen: green_score=%.4f black_score=%.4f",
@@ -395,6 +407,17 @@ class HybridMatte:
             black_score,
         )
         return black_alphas
+
+    def _copy_quality_black_effect_history(self, quality_matte) -> None:
+        history = getattr(quality_matte, "last_black_effect_enhancement_history", [])
+        if not history:
+            return
+        self.black_matte.effect_enhancement_history = [
+            dict(item) for item in history
+        ]
+        self.black_matte.last_effect_enhancement = (
+            self.black_matte._aggregate_effect_enhancement_history()
+        )
 
     @staticmethod
     def _score_traditional_unknown_candidate(alphas: List[np.ndarray]) -> float:
@@ -425,6 +448,7 @@ class HybridMatte:
         self.last_green_screen_layer_debug = None
         self.last_quality_selection = None
         if getattr(self.config, "quality_selection_enable", False):
+            self.black_matte.reset_effect_enhancement_history()
             quality_matte = self._build_quality_driven_matte(bg_mode)
             alphas = quality_matte.generate_sequence(
                 frames,
@@ -432,6 +456,7 @@ class HybridMatte:
                 progress_callback=progress_callback,
             )
             self.last_quality_selection = quality_matte.last_quality_selection
+            self._copy_quality_black_effect_history(quality_matte)
             self.last_active_ai_model = "quality_selection"
             return alphas
         if bg_mode == BackgroundMode.GREEN_SCREEN:
@@ -1935,6 +1960,7 @@ class HybridMatte:
 
         # 1. 传统算法生成基础 alpha
         base_alphas = []
+        self.black_matte.reset_effect_enhancement_history()
         for i, frame in enumerate(frames):
             self._check_cancelled(cancel_check)
             alpha = self.black_matte.generate(frame)
@@ -1949,6 +1975,7 @@ class HybridMatte:
             for frame in frames:
                 self._check_cancelled(cancel_check)
                 ai_alphas.append(self.rvm.generate(frame))
+            self.black_matte.reset_effect_enhancement_history()
             return self._merge_black_background_effects(base_alphas, ai_alphas, frames)
 
         return base_alphas
@@ -1976,9 +2003,5 @@ class HybridMatte:
         if frame is None:
             return np.clip(effect_alpha, 0.0, 1.0)
 
-        frame_f = frame.astype(np.float32, copy=False)
-        brightness = frame_f.mean(axis=2)
-        chroma = frame_f.max(axis=2) - frame_f.min(axis=2)
-        glow_weight = self._smoothstep(brightness / 255.0, 0.18, 0.95)
-        particle_weight = self._smoothstep(chroma / 255.0, 0.05, 0.55)
-        return np.clip(effect_alpha * np.maximum(glow_weight, particle_weight), 0.0, 1.0)
+        enhanced = self.black_matte.enhance_effects(frame, base_alpha)
+        return np.maximum(effect_alpha * 0.35, enhanced.effect_alpha)

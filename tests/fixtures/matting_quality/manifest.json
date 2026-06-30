@@ -1,0 +1,160 @@
+{
+  "samples": [
+    {
+      "name": "black_background",
+      "input_path": "assets/black_background.png",
+      "background_mode": "black_background",
+      "quality_mode": "standard",
+      "candidate_models": [
+        "traditional"
+      ],
+      "risk_ceilings": {
+        "background_residue": 0.2,
+        "transparent_effect_loss": 0.5
+      }
+    },
+    {
+      "name": "green_frame_smoke",
+      "input_path": "assets/frame/test_frame_1.png",
+      "background_mode": "green_screen",
+      "quality_mode": "standard",
+      "candidate_models": [
+        "traditional"
+      ],
+      "risk_ceilings": {
+        "background_residue": 0.2,
+        "hair_edge_loss": 0.5
+      }
+    },
+    {
+      "name": "frame_test_frame_2",
+      "input_path": "assets/frame/test_frame_2.png",
+      "background_mode": "auto",
+      "quality_mode": "standard",
+      "candidate_models": [
+        "traditional"
+      ],
+      "risk_ceilings": {
+        "background_residue": 0.25,
+        "hair_edge_loss": 0.6
+      }
+    },
+    {
+      "name": "frame_test_frame_3",
+      "input_path": "assets/frame/test_frame_3.jpg",
+      "background_mode": "auto",
+      "quality_mode": "standard",
+      "candidate_models": [
+        "traditional"
+      ],
+      "risk_ceilings": {
+        "background_residue": 0.25,
+        "hair_edge_loss": 0.6
+      }
+    },
+    {
+      "name": "frame_test_frame_4",
+      "input_path": "assets/frame/test_frame_4.jpg",
+      "background_mode": "auto",
+      "quality_mode": "standard",
+      "candidate_models": [
+        "traditional"
+      ],
+      "risk_ceilings": {
+        "background_residue": 0.25,
+        "hair_edge_loss": 0.6
+      }
+    },
+    {
+      "name": "green_background",
+      "input_path": "assets/green_background.png",
+      "background_mode": "green_screen",
+      "quality_mode": "standard",
+      "candidate_models": [
+        "traditional"
+      ],
+      "risk_ceilings": {
+        "background_residue": 0.2,
+        "hair_edge_loss": 0.5
+      }
+    },
+    {
+      "name": "video_test_black_1",
+      "input_path": "assets/video/test_black_1.mp4",
+      "background_mode": "black_background",
+      "quality_mode": "standard",
+      "candidate_models": [
+        "traditional"
+      ],
+      "risk_ceilings": {
+        "background_residue": 0.2,
+        "transparent_effect_loss": 0.5
+      }
+    },
+    {
+      "name": "video_test_black_2",
+      "input_path": "assets/video/test_black_2.mp4",
+      "background_mode": "black_background",
+      "quality_mode": "standard",
+      "candidate_models": [
+        "traditional"
+      ],
+      "risk_ceilings": {
+        "background_residue": 0.2,
+        "transparent_effect_loss": 0.5
+      }
+    },
+    {
+      "name": "video_test_green_1",
+      "input_path": "assets/video/test_green_1.mp4",
+      "background_mode": "green_screen",
+      "quality_mode": "standard",
+      "candidate_models": [
+        "traditional"
+      ],
+      "risk_ceilings": {
+        "background_residue": 0.2,
+        "hair_edge_loss": 0.5
+      }
+    },
+    {
+      "name": "video_test_green_2",
+      "input_path": "assets/video/test_green_2.mp4",
+      "background_mode": "green_screen",
+      "quality_mode": "standard",
+      "candidate_models": [
+        "traditional"
+      ],
+      "risk_ceilings": {
+        "background_residue": 0.2,
+        "hair_edge_loss": 0.5
+      }
+    },
+    {
+      "name": "video_test_green_3",
+      "input_path": "assets/video/test_green_3.mp4",
+      "background_mode": "green_screen",
+      "quality_mode": "standard",
+      "candidate_models": [
+        "traditional"
+      ],
+      "risk_ceilings": {
+        "background_residue": 0.2,
+        "hair_edge_loss": 0.5
+      }
+    },
+    {
+      "name": "video_test_green_4",
+      "input_path": "assets/video/test_green_4.mp4",
+      "background_mode": "green_screen",
+      "quality_mode": "standard",
+      "candidate_models": [
+        "traditional"
+      ],
+      "risk_ceilings": {
+        "background_residue": 0.2,
+        "hair_edge_loss": 0.5
+      }
+    }
+  ]
+}

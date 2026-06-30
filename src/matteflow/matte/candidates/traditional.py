@@ -41,13 +41,19 @@ class TraditionalCandidateGenerator(TimedCandidateGenerator):
             alphas.append(engine.generate(frame))
             if progress_callback and index % max(1, len(frames) // 20) == 0:
                 progress_callback(index, len(frames))
+        diagnostics = {"available": True, "background_mode": mode.value}
+        effect_history = getattr(engine, "effect_enhancement_history", None)
+        if effect_history:
+            diagnostics["black_effect_enhancement_history"] = [
+                dict(item) for item in effect_history
+            ]
 
         return self._build_candidate(
             start_time=start_time,
             alphas=alphas,
             confidences=[None] * len(alphas),
             frame_shapes=frame_shapes,
-            diagnostics={"available": True, "background_mode": mode.value},
+            diagnostics=diagnostics,
         )
 
     def _effective_mode(self) -> BackgroundMode:

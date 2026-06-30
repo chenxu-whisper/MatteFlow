@@ -333,6 +333,7 @@ class MattingPipeline:
                 region_context=decontaminate_context,
                 hybrid_matte=getattr(self, "hybrid_matte", None),
                 decontaminate_context=decontaminate_context,
+                edge_reconstruction=getattr(self.refiner, "last_edge_reconstruction", {}),
                 artifacts=self._build_output_artifacts(output_dir, quality_selection_artifacts),
             )
             processing_report_path = self.report_writer.write(processing_report, output_dir)
@@ -350,6 +351,7 @@ class MattingPipeline:
                 region_context=decontaminate_context,
                 hybrid_matte=getattr(self, "hybrid_matte", None),
                 decontaminate_context=decontaminate_context,
+                edge_reconstruction=getattr(self.refiner, "last_edge_reconstruction", {}),
                 artifacts=self._build_output_artifacts(output_dir, quality_selection_artifacts),
             )
             processing_report_path = self.report_writer.write(processing_report, output_dir)
@@ -447,7 +449,11 @@ class MattingPipeline:
         for index, (frame, alpha) in enumerate(zip(frames, alphas)):
             base_alpha = base_alphas[index] if base_alphas is not None and index < len(base_alphas) else None
             ownerships.append(self.region_analyzer.analyze(frame, alpha, base_alpha))
-        return {"region_ownership": ownerships}
+        context = {"region_ownership": ownerships}
+        region_expectations = getattr(self.config, "region_expectations", {})
+        if region_expectations:
+            context["region_expectations"] = dict(region_expectations)
+        return context
 
     def _write_quality_debug_outputs(self, frames, alphas, output_dir: Path, quality_report=None):
         """Write alpha quality overlays and a compact metric report when debug output is enabled."""

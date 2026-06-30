@@ -19,6 +19,9 @@ class ProcessingReportView:
     quality_summary: str
     model_summary: str
     region_summary: str
+    region_supervision_summary: str
+    edge_reconstruction_summary: str
+    black_effect_summary: str
     recovery_summary: str
     fusion_summary: str = ""
     quality_selection_summary: str = ""
@@ -34,7 +37,10 @@ class ProcessingReportView:
             self.quality_summary,
             self.model_summary,
             self.region_summary,
+            self.region_supervision_summary,
             self.quality_selection_summary,
+            self.edge_reconstruction_summary,
+            self.black_effect_summary,
             self.recovery_summary,
             self.fusion_summary,
             self._warnings_markdown(),
@@ -78,6 +84,9 @@ class ProcessingReportViewBuilder:
             quality_summary=self._quality_summary(payload),
             model_summary=self._model_summary(payload),
             region_summary=self._region_summary(payload),
+            region_supervision_summary=self._region_supervision_summary(payload),
+            edge_reconstruction_summary=self._edge_reconstruction_summary(payload),
+            black_effect_summary=self._black_effect_summary(payload),
             recovery_summary=self._recovery_summary(payload),
             fusion_summary=self._fusion_summary(payload),
             quality_selection_summary=format_quality_selection_summary(payload),
@@ -93,6 +102,9 @@ class ProcessingReportViewBuilder:
             quality_summary=UNAVAILABLE_REPORT_TEXT,
             model_summary="",
             region_summary="",
+            region_supervision_summary="",
+            edge_reconstruction_summary="",
+            black_effect_summary="",
             recovery_summary="",
             fusion_summary="",
             quality_selection_summary="",
@@ -113,6 +125,9 @@ class ProcessingReportViewBuilder:
                 f"噪点像素：{_format_int(quality.get('speckle_pixels'))}",
                 f"背景残留：{_format_float(quality.get('background_residue'))}",
                 f"时序闪烁：{_format_float(quality.get('temporal_flicker'))}",
+                f"边缘时序闪烁：{_format_float(quality.get('edge_temporal_flicker'))}",
+                f"半透明时序闪烁：{_format_float(quality.get('transparent_temporal_flicker'))}",
+                f"最大帧差：{_format_float(quality.get('max_frame_delta'))}",
                 f"帧数：{_format_int(job.get('frame_count'))}",
                 f"总耗时：{_format_seconds(timings.get('total'))}",
             ]
@@ -147,6 +162,53 @@ class ProcessingReportViewBuilder:
         lines = ["**区域统计**"]
         lines.extend(f"{label}：{_format_int(regions.get(key))} px" for key, label in labels)
         return "\n".join(lines)
+
+    @staticmethod
+    def _region_supervision_summary(payload: Mapping[str, Any]) -> str:
+        supervision = _mapping(payload.get("region_supervision"))
+        if not supervision:
+            return ""
+        pixels = _mapping(supervision.get("region_pixels"))
+        ratios = _mapping(supervision.get("region_ratios"))
+        lines = ["**区域弱监督**"]
+        for region, count in pixels.items():
+            lines.append(f"{region}：{_format_int(count)} px / {_format_float(ratios.get(region))}")
+        failures = supervision.get("failures") or []
+        if failures:
+            lines.append("失败项：")
+            lines.extend(f"- {_format_value(failure)}" for failure in failures)
+        return "\n".join(lines)
+
+    @staticmethod
+    def _edge_reconstruction_summary(payload: Mapping[str, Any]) -> str:
+        reconstruction = _mapping(payload.get("edge_reconstruction"))
+        if not reconstruction:
+            return ""
+        return "\n".join(
+            [
+                "**边缘重建**",
+                f"变更像素：{_format_int(reconstruction.get('changed_pixels'))}",
+                f"保护像素：{_format_int(reconstruction.get('protected_pixels'))}",
+                f"平均变化：{_format_float(reconstruction.get('mean_delta'))}",
+            ]
+        )
+
+    @staticmethod
+    def _black_effect_summary(payload: Mapping[str, Any]) -> str:
+        enhancement = _mapping(payload.get("black_effect_enhancement"))
+        if not enhancement:
+            return ""
+        return "\n".join(
+            [
+                "**黑底增强**",
+                f"烟雾像素：{_format_int(enhancement.get('smoke_pixels'))}",
+                f"辉光像素：{_format_int(enhancement.get('glow_pixels'))}",
+                f"粒子像素：{_format_int(enhancement.get('particle_pixels'))}",
+                f"主体边缘像素：{_format_int(enhancement.get('subject_edge_pixels'))}",
+                f"黑底压制像素：{_format_int(enhancement.get('black_residue_suppressed_pixels'))}",
+                f"平均 alpha 变化：{_format_float(enhancement.get('mean_alpha_delta'))}",
+            ]
+        )
 
     @staticmethod
     def _recovery_summary(payload: Mapping[str, Any]) -> str:

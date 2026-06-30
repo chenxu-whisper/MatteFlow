@@ -19,6 +19,11 @@ class QualityRegressionThresholds:
     max_hole_pixels: int = 100
     max_background_residue: float = 0.02
     max_temporal_flicker: float = 0.08
+    max_edge_temporal_flicker: float = 0.08
+    max_transparent_temporal_flicker: float = 0.08
+    max_max_frame_delta: float = 0.12
+    max_hair_low_alpha_ratio: float = 0.30
+    max_effect_low_alpha_ratio: float = 0.30
     max_score_drop: float = 0.05
     max_p0_risk_score_increase: float = 0.20
 
@@ -126,6 +131,11 @@ class QualityRegressionRun:
                 "max_hole_pixels": self.thresholds.max_hole_pixels,
                 "max_background_residue": self.thresholds.max_background_residue,
                 "max_temporal_flicker": self.thresholds.max_temporal_flicker,
+                "max_edge_temporal_flicker": self.thresholds.max_edge_temporal_flicker,
+                "max_transparent_temporal_flicker": self.thresholds.max_transparent_temporal_flicker,
+                "max_max_frame_delta": self.thresholds.max_max_frame_delta,
+                "max_hair_low_alpha_ratio": self.thresholds.max_hair_low_alpha_ratio,
+                "max_effect_low_alpha_ratio": self.thresholds.max_effect_low_alpha_ratio,
                 "max_score_drop": self.thresholds.max_score_drop,
                 "max_p0_risk_score_increase": self.thresholds.max_p0_risk_score_increase,
             },
@@ -261,6 +271,42 @@ class QualityRegressionEvaluator:
             failures.append(
                 f"temporal_flicker {temporal_flicker:.3f} above maximum {thresholds.max_temporal_flicker:.3f}"
             )
+        edge_temporal_flicker = _float_metric(metrics, "edge_temporal_flicker")
+        if edge_temporal_flicker > thresholds.max_edge_temporal_flicker:
+            failures.append(
+                "edge_temporal_flicker "
+                f"{edge_temporal_flicker:.3f} above maximum {thresholds.max_edge_temporal_flicker:.3f}"
+            )
+        transparent_temporal_flicker = _float_metric(metrics, "transparent_temporal_flicker")
+        if transparent_temporal_flicker > thresholds.max_transparent_temporal_flicker:
+            failures.append(
+                "transparent_temporal_flicker "
+                f"{transparent_temporal_flicker:.3f} above maximum "
+                f"{thresholds.max_transparent_temporal_flicker:.3f}"
+            )
+        max_frame_delta = _float_metric(metrics, "max_frame_delta")
+        if max_frame_delta > thresholds.max_max_frame_delta:
+            failures.append(
+                f"max_frame_delta {max_frame_delta:.3f} above maximum {thresholds.max_max_frame_delta:.3f}"
+            )
+        hair_low_alpha_ratio = _float_metric(
+            metrics,
+            "p0_risk.hair_edge_loss.signal.hair_low_alpha_ratio",
+        )
+        if hair_low_alpha_ratio > thresholds.max_hair_low_alpha_ratio:
+            failures.append(
+                "hair_low_alpha_ratio "
+                f"{hair_low_alpha_ratio:.3f} above maximum {thresholds.max_hair_low_alpha_ratio:.3f}"
+            )
+        effect_low_alpha_ratio = _float_metric(
+            metrics,
+            "p0_risk.transparent_effect_loss.signal.effect_low_alpha_ratio",
+        )
+        if effect_low_alpha_ratio > thresholds.max_effect_low_alpha_ratio:
+            failures.append(
+                "effect_low_alpha_ratio "
+                f"{effect_low_alpha_ratio:.3f} above maximum {thresholds.max_effect_low_alpha_ratio:.3f}"
+            )
         if (
             metrics.get("quality_selection.available") is True
             and _int_metric(metrics, "quality_selection.candidate_count") <= 0
@@ -332,6 +378,9 @@ def _extract_metrics(payload: Mapping[str, Any]) -> dict[str, Any]:
         "hole_pixels": _int_metric(quality, "hole_pixels"),
         "background_residue": _float_metric(quality, "background_residue"),
         "temporal_flicker": _float_metric(quality, "temporal_flicker"),
+        "edge_temporal_flicker": _float_metric(quality, "edge_temporal_flicker"),
+        "transparent_temporal_flicker": _float_metric(quality, "transparent_temporal_flicker"),
+        "max_frame_delta": _float_metric(quality, "max_frame_delta"),
     }
     p0_risks = payload.get("p0_risks")
     if isinstance(p0_risks, Mapping):
@@ -341,6 +390,11 @@ def _extract_metrics(payload: Mapping[str, Any]) -> dict[str, Any]:
             metric_prefix = f"p0_risk.{risk_name}"
             metrics[f"{metric_prefix}.score"] = _float_metric(risk_payload, "score")
             metrics[f"{metric_prefix}.level"] = str(risk_payload.get("level", "pass"))
+            signals = risk_payload.get("signals")
+            if isinstance(signals, Mapping):
+                for signal_name, signal_value in signals.items():
+                    if _is_number(signal_value):
+                        metrics[f"{metric_prefix}.signal.{signal_name}"] = float(signal_value)
     quality_selection = payload.get("quality_selection")
     if isinstance(quality_selection, Mapping):
         metrics["quality_selection.available"] = bool(quality_selection.get("available", False))

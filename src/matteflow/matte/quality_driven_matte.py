@@ -44,6 +44,7 @@ class QualityDrivenMatte:
         self.quality_evaluator = MatteQualityEvaluator()
         self.selector = QualitySelector()
         self.last_quality_selection: dict[str, Any] | None = None
+        self.last_black_effect_enhancement_history: list[dict[str, Any]] = []
 
     def generate_sequence(
         self,
@@ -55,6 +56,7 @@ class QualityDrivenMatte:
         frame_shapes = [tuple(frame.shape[:2]) for frame in frames]
         candidates: list[MatteCandidateSequence] = []
         skipped: list[dict[str, Any]] = []
+        self.last_black_effect_enhancement_history = []
 
         for generator in self.generators:
             name = getattr(generator, "name", generator.__class__.__name__)
@@ -75,6 +77,11 @@ class QualityDrivenMatte:
                 )
             if result.candidate is not None:
                 candidates.append(result.candidate)
+                history = result.candidate.diagnostics.get("black_effect_enhancement_history")
+                if isinstance(history, list):
+                    self.last_black_effect_enhancement_history.extend(
+                        dict(item) for item in history if isinstance(item, dict)
+                    )
             else:
                 skip_info = result.to_skip_dict(str(name))
                 logger.info(

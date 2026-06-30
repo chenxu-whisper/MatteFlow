@@ -64,6 +64,12 @@ def _add_process_arguments(parser: argparse.ArgumentParser) -> None:
         default="standard",
         help="质量模式 (default: standard)",
     )
+    parser.add_argument(
+        "--quality-preset",
+        choices=["default", "best"],
+        default="default",
+        help="质量预设：default 保持兼容；best 启用高质量、多候选选择和 BiRefNet 候选自动加载",
+    )
     parser.add_argument("--mask", action="store_true", help="输出黑白遮罩")
     parser.add_argument("--debug", action="store_true", help="输出调试信息")
     parser.add_argument(
@@ -89,6 +95,11 @@ def _add_quality_regression_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-hole-pixels", type=int, default=100)
     parser.add_argument("--max-background-residue", type=float, default=0.02)
     parser.add_argument("--max-temporal-flicker", type=float, default=0.08)
+    parser.add_argument("--max-edge-temporal-flicker", type=float, default=0.08)
+    parser.add_argument("--max-transparent-temporal-flicker", type=float, default=0.08)
+    parser.add_argument("--max-max-frame-delta", type=float, default=0.12)
+    parser.add_argument("--max-hair-low-alpha-ratio", type=float, default=0.30)
+    parser.add_argument("--max-effect-low-alpha-ratio", type=float, default=0.30)
     parser.add_argument("--max-score-drop", type=float, default=0.05)
     parser.set_defaults(command="quality-regression")
 
@@ -135,6 +146,10 @@ def _build_config(args: argparse.Namespace) -> MattingConfig:
     config.output_debug = args.debug
     config.quality_selection_enable = bool(getattr(args, "quality_selection", False))
     config.quality_birefnet_auto_load = bool(getattr(args, "quality_birefnet_auto_load", False))
+    if getattr(args, "quality_preset", "default") == "best":
+        config.quality_mode = QualityMode.HIGH
+        config.quality_selection_enable = True
+        config.quality_birefnet_auto_load = True
     return config
 
 
@@ -146,6 +161,11 @@ def _run_quality_regression(args: argparse.Namespace) -> int:
         max_hole_pixels=args.max_hole_pixels,
         max_background_residue=args.max_background_residue,
         max_temporal_flicker=args.max_temporal_flicker,
+        max_edge_temporal_flicker=args.max_edge_temporal_flicker,
+        max_transparent_temporal_flicker=args.max_transparent_temporal_flicker,
+        max_max_frame_delta=args.max_max_frame_delta,
+        max_hair_low_alpha_ratio=args.max_hair_low_alpha_ratio,
+        max_effect_low_alpha_ratio=args.max_effect_low_alpha_ratio,
         max_score_drop=args.max_score_drop,
     )
     result = QualityRegressionEvaluator(thresholds=thresholds, baseline=baseline).evaluate_root(

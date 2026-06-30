@@ -50,6 +50,16 @@ def test_builder_creates_required_sections_and_serializable_values(tmp_path):
     )
     hybrid_matte = SimpleNamespace(
         last_active_ai_model="gvm",
+        black_matte=SimpleNamespace(
+            last_effect_enhancement={
+                "smoke_pixels": np.int64(12),
+                "glow_pixels": np.int64(34),
+                "particle_pixels": np.int64(5),
+                "subject_edge_pixels": np.int64(6),
+                "black_residue_suppressed_pixels": np.int64(78),
+                "mean_alpha_delta": np.float32(0.125),
+            }
+        ),
         last_fallback_quality_metrics={"weighted_score": np.float32(0.82)},
         last_fusion_quality_gate_diagnostics={
             "risk_guard": {
@@ -103,14 +113,17 @@ def test_builder_creates_required_sections_and_serializable_values(tmp_path):
         "quality",
         "p0_risks",
         "regions",
+        "region_supervision",
         "model_decisions",
         "fusion",
         "quality_selection",
+        "edge_reconstruction",
+        "black_effect_enhancement",
         "foreground_recovery",
         "artifacts",
         "warnings",
     }
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["job"]["background_mode_requested"] == "auto"
     assert payload["job"]["background_mode_effective"] == "green_screen"
     assert payload["job"]["quality_mode"] == "high"
@@ -120,6 +133,8 @@ def test_builder_creates_required_sections_and_serializable_values(tmp_path):
     assert payload["p0_risks"]["background_residue"]["signals"]["quality_background_residue"] == 0.01
     assert payload["regions"]["subject_pixels"] == 3
     assert payload["regions"]["transparent_effect_pixels"] == 2
+    assert payload["region_supervision"]["region_pixels"]["hair_edge"] == 1
+    assert payload["region_supervision"]["failures"] == []
     assert payload["model_decisions"]["fallback_quality_metrics"]["weighted_score"] == 0.82
     assert payload["model_decisions"]["fusion_quality_gate"]["risk_guard"]["triggered"] is True
     assert payload["model_decisions"]["fusion_quality_gate"]["risk_guard"]["reasons"] == ["hole_pixels"]
@@ -129,6 +144,14 @@ def test_builder_creates_required_sections_and_serializable_values(tmp_path):
     assert payload["quality_selection"]["selected_model_counts"]["traditional"] == 3
     assert payload["fusion"]["available"] is True
     assert payload["fusion"]["rejected_takeovers"]["luminous_prop"] == 2
+    assert payload["black_effect_enhancement"] == {
+        "smoke_pixels": 12,
+        "glow_pixels": 34,
+        "particle_pixels": 5,
+        "subject_edge_pixels": 6,
+        "black_residue_suppressed_pixels": 78,
+        "mean_alpha_delta": 0.125,
+    }
     assert payload["foreground_recovery"]["screen_rgb"] == [0.0, 210.0, 40.0]
     assert payload["artifacts"]["processed_output"] == "processed.png"
 
@@ -154,7 +177,7 @@ def test_writer_writes_stable_processing_report_json(tmp_path):
 
     assert report_path == tmp_path / "processing_report.json"
     payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["job"]["input_path"] == "input.png"
     assert payload["fusion"] == {
         "available": False,
@@ -168,6 +191,8 @@ def test_writer_writes_stable_processing_report_json(tmp_path):
         "candidate_quality": {},
         "skipped_candidates": [],
     }
+    assert payload["region_supervision"]["region_pixels"]["subject"] == 0
+    assert payload["edge_reconstruction"] == {}
     assert report_path.read_text(encoding="utf-8").endswith("\n")
 
 
@@ -197,6 +222,9 @@ def test_builder_handles_missing_optional_diagnostics(tmp_path):
         "hole_pixels": 0,
         "background_residue": None,
         "temporal_flicker": None,
+        "edge_temporal_flicker": None,
+        "transparent_temporal_flicker": None,
+        "max_frame_delta": None,
     }
     assert set(payload["p0_risks"]) == {
         "hair_edge_loss",
@@ -215,11 +243,61 @@ def test_builder_handles_missing_optional_diagnostics(tmp_path):
         "background_residue_pixels": 0,
         "uncertain_edge_pixels": 0,
     }
+    assert payload["region_supervision"]["total_pixels"] == 0
+    assert payload["edge_reconstruction"] == {}
+    assert payload["black_effect_enhancement"] == {}
     assert payload["model_decisions"]["active_ai_model"] is None
     assert payload["quality_selection"]["available"] is False
     assert payload["foreground_recovery"] == {}
     assert payload["artifacts"] == {}
     assert payload["warnings"] == []
+
+
+def test_builder_aggregates_black_effect_enhancement_history(tmp_path):
+    config = MattingConfig(background_mode=BackgroundMode.BLACK_BACKGROUND)
+    hybrid_matte = SimpleNamespace(
+        black_matte=SimpleNamespace(
+            effect_enhancement_history=[
+                {
+                    "smoke_pixels": 2,
+                    "glow_pixels": 3,
+                    "particle_pixels": 1,
+                    "subject_edge_pixels": 4,
+                    "black_residue_suppressed_pixels": 5,
+                    "mean_alpha_delta": 0.10,
+                },
+                {
+                    "smoke_pixels": 7,
+                    "glow_pixels": 11,
+                    "particle_pixels": 13,
+                    "subject_edge_pixels": 17,
+                    "black_residue_suppressed_pixels": 19,
+                    "mean_alpha_delta": 0.30,
+                },
+            ]
+        )
+    )
+
+    report = ProcessingReportBuilder().build(
+        input_path=Path("input.mp4"),
+        output_dir=tmp_path,
+        config=config,
+        frame_count=2,
+        background_mode_effective=BackgroundMode.BLACK_BACKGROUND,
+        timings={},
+        quality_report=None,
+        hybrid_matte=hybrid_matte,
+    )
+
+    assert report.to_dict()["black_effect_enhancement"] == {
+        "frames": 2,
+        "smoke_pixels": 9,
+        "glow_pixels": 14,
+        "particle_pixels": 14,
+        "subject_edge_pixels": 21,
+        "black_residue_suppressed_pixels": 24,
+        "mean_alpha_delta": 0.2,
+    }
 
 
 def test_report_view_formats_quality_selection_summary():
@@ -260,3 +338,84 @@ def test_report_view_includes_quality_selection_summary_in_markdown():
     markdown = view.to_markdown()
     assert "质量选择: 已启用" in markdown
     assert "traditional: 3" in markdown
+
+
+def test_report_view_includes_black_effect_enhancement_summary():
+    view = ProcessingReportViewBuilder().from_payload(
+        {
+            "quality": {},
+            "job": {},
+            "timings": {},
+            "regions": {},
+            "foreground_recovery": {},
+            "fusion": {},
+            "quality_selection": {},
+            "black_effect_enhancement": {
+                "smoke_pixels": 12,
+                "glow_pixels": 34,
+                "particle_pixels": 5,
+                "subject_edge_pixels": 6,
+                "black_residue_suppressed_pixels": 78,
+                "mean_alpha_delta": 0.125,
+            },
+        }
+    )
+
+    markdown = view.to_markdown()
+    assert "黑底增强" in markdown
+    assert "烟雾像素：12" in markdown
+    assert "平均 alpha 变化：0.125" in markdown
+
+
+def test_report_view_includes_temporal_detail_quality_metrics():
+    view = ProcessingReportViewBuilder().from_payload(
+        {
+            "quality": {
+                "edge_temporal_flicker": 0.12,
+                "transparent_temporal_flicker": 0.08,
+                "max_frame_delta": 0.20,
+            },
+            "job": {},
+            "timings": {},
+            "regions": {},
+            "foreground_recovery": {},
+            "fusion": {},
+            "quality_selection": {},
+        }
+    )
+
+    markdown = view.to_markdown()
+    assert "边缘时序闪烁：0.120" in markdown
+    assert "半透明时序闪烁：0.080" in markdown
+    assert "最大帧差：0.200" in markdown
+
+
+def test_report_view_includes_region_supervision_and_edge_reconstruction():
+    view = ProcessingReportViewBuilder().from_payload(
+        {
+            "quality": {},
+            "job": {},
+            "timings": {},
+            "regions": {},
+            "region_supervision": {
+                "region_pixels": {"hair_edge": 3},
+                "region_ratios": {"hair_edge": 0.125},
+                "failures": ["required_region transparent_effect missing"],
+            },
+            "edge_reconstruction": {
+                "changed_pixels": 4,
+                "protected_pixels": 2,
+                "mean_delta": 0.05,
+            },
+            "foreground_recovery": {},
+            "fusion": {},
+            "quality_selection": {},
+        }
+    )
+
+    markdown = view.to_markdown()
+    assert "区域弱监督" in markdown
+    assert "hair_edge：3 px / 0.125" in markdown
+    assert "required_region transparent_effect missing" in markdown
+    assert "边缘重建" in markdown
+    assert "变更像素：4" in markdown

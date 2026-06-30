@@ -13,6 +13,7 @@ class EdgeRefiner:
     def __init__(self, config: MattingConfig):
         self.config = config
         self._region_analyzer = RegionOwnershipAnalyzer()
+        self.last_edge_reconstruction = {}
 
     def refine(self, frames, alphas, context=None):
         """
@@ -27,26 +28,56 @@ class EdgeRefiner:
         """
         refined = []
         context = context or {}
+        diagnostics = []
         for index, (frame, alpha) in enumerate(zip(frames, alphas)):
             ownership = self._ownership_from_context(context, index)
             refined_alpha = self._refine_single(frame, alpha, ownership=ownership)
             refined.append(refined_alpha)
+            diagnostics.append(dict(self.last_edge_reconstruction))
+        self.last_edge_reconstruction = {
+            "frames": len(diagnostics),
+            "changed_pixels": int(sum(item.get("changed_pixels", 0) for item in diagnostics)),
+            "protected_pixels": int(sum(item.get("protected_pixels", 0) for item in diagnostics)),
+            "mean_delta": float(np.mean([item.get("mean_delta", 0.0) for item in diagnostics]))
+            if diagnostics
+            else 0.0,
+            "frames_detail": diagnostics,
+        }
         return refined
 
     def _refine_single(self, frame: np.ndarray, alpha: np.ndarray, ownership=None) -> np.ndarray:
         """单帧边缘细化"""
+        if ownership is None:
+            ownership = self._region_analyzer.analyze(frame, alpha)
+
         # 1. 提取边缘区域（trimap: 确定前景/背景/未知）
         trimap = self._generate_trimap(alpha)
 
         # 2. 仅在未知区域进行细化
         unknown_mask = (trimap == 128)
+        edge_mask = (ownership.hair_edge | ownership.uncertain_edge).astype(bool, copy=False)
+        protected_mask = (ownership.luminous_prop | ownership.transparent_effect).astype(bool, copy=False)
+        reconstruction_mask = unknown_mask & edge_mask & (~protected_mask)
 
-        if not np.any(unknown_mask):
+        if not np.any(reconstruction_mask):
+            self.last_edge_reconstruction = self._edge_reconstruction_diagnostics(
+                original=alpha,
+                refined=alpha,
+                reconstruction_mask=reconstruction_mask,
+                protected_mask=protected_mask,
+            )
             return alpha
 
         # 3. 局部导向滤波细化
-        refined = self._local_guided_filter(frame, alpha, unknown_mask)
+        refined = self._local_guided_filter(frame, alpha, reconstruction_mask)
         refined = self._restore_warm_luminous_props(frame, alpha, refined, ownership=ownership)
+        refined = np.where(protected_mask, np.maximum(refined, alpha), refined)
+        self.last_edge_reconstruction = self._edge_reconstruction_diagnostics(
+            original=alpha,
+            refined=refined,
+            reconstruction_mask=reconstruction_mask,
+            protected_mask=protected_mask,
+        )
 
         return refined
 
@@ -108,6 +139,23 @@ class EdgeRefiner:
         if not np.any(luminous_prop):
             return refined
         return np.where(luminous_prop, np.maximum(refined, original), refined).astype(np.float32, copy=False)
+
+    @staticmethod
+    def _edge_reconstruction_diagnostics(
+        *,
+        original: np.ndarray,
+        refined: np.ndarray,
+        reconstruction_mask: np.ndarray,
+        protected_mask: np.ndarray,
+    ) -> dict:
+        delta = np.abs(refined.astype(np.float32, copy=False) - original.astype(np.float32, copy=False))
+        changed = reconstruction_mask & (delta > 1e-6)
+        return {
+            "changed_pixels": int(np.count_nonzero(changed)),
+            "protected_pixels": int(np.count_nonzero(protected_mask)),
+            "reconstruction_pixels": int(np.count_nonzero(reconstruction_mask)),
+            "mean_delta": float(delta[changed].mean()) if np.any(changed) else 0.0,
+        }
 
     @staticmethod
     def _ownership_from_context(context: dict, index: int):

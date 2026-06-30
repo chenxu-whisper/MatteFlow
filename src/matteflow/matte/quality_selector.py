@@ -11,6 +11,7 @@ from ..analysis.alpha_quality import AlphaQualityAnalyzer, AlphaQualityReport
 from ..analysis.region_ownership import RegionOwnership
 from ..evaluation.matte_quality import REGION_FIELDS, CandidateQualityReport
 from .candidates.types import MatteCandidateSequence
+from .quality_ranker import QualityRanker
 
 EDGE_GUARDED_REGIONS = frozenset({"hair_edge", "uncertain_edge"})
 EDGE_REGION_SCORE_MARGIN = 0.03
@@ -46,6 +47,7 @@ class QualitySelectionResult:
     candidate_quality: dict[str, Any]
     skipped_candidates: list[dict[str, Any]]
     guarded_frames: list[dict[str, Any]]
+    ranking_decisions: list[dict[str, Any]]
 
     @property
     def selected_model_counts(self) -> dict[str, int]:
@@ -63,10 +65,14 @@ class QualitySelectionResult:
             "skipped_candidates": list(self.skipped_candidates),
             "decisions": [decision.to_dict() for decision in self.decisions],
             "guarded_frames": list(self.guarded_frames),
+            "ranking_decisions": list(self.ranking_decisions),
         }
 
 
 class QualitySelector:
+    def __init__(self, *, ranker: QualityRanker | None = None):
+        self.ranker = ranker or QualityRanker()
+
     def select(
         self,
         *,
@@ -82,6 +88,7 @@ class QualitySelector:
                 candidate_quality={},
                 skipped_candidates=list(skipped_candidates or []),
                 guarded_frames=[],
+                ranking_decisions=[],
             )
 
         frame_count = len(candidates[0].alphas)
@@ -96,6 +103,7 @@ class QualitySelector:
         selected_alphas: list[np.ndarray] = []
         decisions: list[SelectionDecision] = []
         guarded_frames: list[dict[str, Any]] = []
+        ranking_decisions: list[dict[str, Any]] = []
 
         for frame_index in range(frame_count):
             result_alpha = candidates[0].alphas[frame_index].copy()
@@ -115,7 +123,8 @@ class QualitySelector:
                 )
                 if best_candidate is None:
                     continue
-                candidate, score = best_candidate
+                candidate, score, ranking = best_candidate
+                ranking_decisions.append(ranking)
                 region_mask = mask & (~assigned)
                 if not np.any(region_mask):
                     continue
@@ -185,36 +194,33 @@ class QualitySelector:
             candidate_quality=quality_report.to_summary(),
             skipped_candidates=list(skipped_candidates or []),
             guarded_frames=guarded_frames,
+            ranking_decisions=ranking_decisions,
         )
 
-    @staticmethod
     def _best_candidate(
+        self,
         candidates: Sequence[MatteCandidateSequence],
         quality_by_frame: dict[tuple[int, str], Any],
         *,
         frame_index: int,
         region: str,
-    ) -> tuple[MatteCandidateSequence, float] | None:
-        best: tuple[MatteCandidateSequence, float, float] | None = None
+    ) -> tuple[MatteCandidateSequence, float, dict[str, Any]] | None:
+        candidate_quality: dict[str, Any] = {}
+        candidate_by_name = {}
         for candidate in candidates:
             quality = quality_by_frame.get((frame_index, candidate.name))
             if quality is None:
                 continue
-            score = float(quality.region_scores.get(region, quality.overall_score))
-            overall_score = float(quality.overall_score)
-            if best is None:
-                best = (candidate, score, overall_score)
-            elif QualitySelector._is_better_candidate(
-                region=region,
-                score=score,
-                overall_score=overall_score,
-                best_score=best[1],
-                best_overall_score=best[2],
-            ):
-                best = (candidate, score, overall_score)
-        if best is None:
+            candidate_quality[candidate.name] = quality
+            candidate_by_name[candidate.name] = candidate
+        if not candidate_quality:
             return None
-        return best[0], best[1]
+        ranking = self.ranker.choose_best(region=region, candidate_quality=candidate_quality)
+        candidate = candidate_by_name[ranking.candidate_name]
+        score = float(ranking.factors.get("region_score", ranking.ranking_score))
+        ranking_payload = ranking.to_dict()
+        ranking_payload["frame_index"] = int(frame_index)
+        return candidate, score, ranking_payload
 
     @staticmethod
     def _is_better_candidate(

@@ -9,7 +9,7 @@ MatteFlow - High-quality video, sequence, and image matting engine
 - 边缘细化与时序稳定
 """
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 __author__ = "ByteDance"
 
 from .config import BackgroundMode, MattingConfig, QualityMode

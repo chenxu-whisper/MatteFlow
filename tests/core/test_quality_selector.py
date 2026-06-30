@@ -199,6 +199,16 @@ def test_quality_selector_skips_unavailable_candidate_and_selects_best_model_by_
         "traditional": 3,
         "birefnet": 1,
     }
+    assert payload["ranking_decisions"]
+    first_ranking = payload["ranking_decisions"][0]
+    assert set(first_ranking) >= {
+        "frame_index",
+        "region",
+        "candidate_name",
+        "ranking_score",
+        "factors",
+        "reasons",
+    }
 
 
 def test_quality_selector_requires_clear_edge_score_gain_and_overall_guard():

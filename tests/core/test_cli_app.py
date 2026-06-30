@@ -40,6 +40,34 @@ def test_build_parser_accepts_quality_regression_subcommand():
     assert args.reports == "reports"
 
 
+def test_build_parser_accepts_quality_regression_detail_thresholds():
+    parser = cli_app.build_parser()
+
+    args = parser.parse_args(
+        [
+            "quality-regression",
+            "--reports",
+            "reports",
+            "--max-edge-temporal-flicker",
+            "0.11",
+            "--max-transparent-temporal-flicker",
+            "0.12",
+            "--max-max-frame-delta",
+            "0.20",
+            "--max-hair-low-alpha-ratio",
+            "0.21",
+            "--max-effect-low-alpha-ratio",
+            "0.22",
+        ]
+    )
+
+    assert args.max_edge_temporal_flicker == 0.11
+    assert args.max_transparent_temporal_flicker == 0.12
+    assert args.max_max_frame_delta == 0.20
+    assert args.max_hair_low_alpha_ratio == 0.21
+    assert args.max_effect_low_alpha_ratio == 0.22
+
+
 def test_build_parser_keeps_legacy_top_level_process_arguments():
     parser = cli_app.build_parser()
 
@@ -66,6 +94,17 @@ def test_build_config_sets_quality_birefnet_auto_load():
     )
     config = cli_app._build_config(args)
 
+    assert config.quality_selection_enable is True
+    assert config.quality_birefnet_auto_load is True
+
+
+def test_build_config_best_quality_preset_enables_high_quality_selection_path():
+    parser = cli_app.build_parser()
+
+    args = parser.parse_args(["--input", "sample.mp4", "--quality-preset", "best"])
+    config = cli_app._build_config(args)
+
+    assert config.quality_mode.value == "high"
     assert config.quality_selection_enable is True
     assert config.quality_birefnet_auto_load is True
 

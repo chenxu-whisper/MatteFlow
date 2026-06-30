@@ -11,7 +11,7 @@ import numpy as np
 
 from ..config import BackgroundMode, MattingConfig
 
-REPORT_SCHEMA_VERSION = 1
+REPORT_SCHEMA_VERSION = 2
 REPORT_FILENAME = "processing_report.json"
 
 
@@ -25,9 +25,12 @@ class ProcessingReport:
     quality: dict[str, Any]
     p0_risks: dict[str, Any]
     regions: dict[str, int]
+    region_supervision: dict[str, Any]
     model_decisions: dict[str, Any]
     fusion: dict[str, Any]
     quality_selection: dict[str, Any]
+    edge_reconstruction: dict[str, Any]
+    black_effect_enhancement: dict[str, Any]
     foreground_recovery: dict[str, Any]
     artifacts: dict[str, Any]
     warnings: list[str]
@@ -41,9 +44,12 @@ class ProcessingReport:
             "quality": _json_safe(self.quality),
             "p0_risks": _json_safe(self.p0_risks),
             "regions": _json_safe(self.regions),
+            "region_supervision": _json_safe(self.region_supervision),
             "model_decisions": _json_safe(self.model_decisions),
             "fusion": _json_safe(self.fusion),
             "quality_selection": _json_safe(self.quality_selection),
+            "edge_reconstruction": _json_safe(self.edge_reconstruction),
+            "black_effect_enhancement": _json_safe(self.black_effect_enhancement),
             "foreground_recovery": _json_safe(self.foreground_recovery),
             "artifacts": _json_safe(self.artifacts),
             "warnings": _json_safe(self.warnings),
@@ -76,6 +82,7 @@ class ProcessingReportBuilder:
         region_context: Mapping[str, Any] | None = None,
         hybrid_matte: Any | None = None,
         decontaminate_context: Mapping[str, Any] | None = None,
+        edge_reconstruction: Mapping[str, Any] | None = None,
         artifacts: Mapping[str, Any] | None = None,
     ) -> ProcessingReport:
         output_dir = Path(output_dir)
@@ -98,9 +105,12 @@ class ProcessingReportBuilder:
             quality=self._build_quality(quality_report, frame_count),
             p0_risks=self._build_p0_risks(p0_quality_report),
             regions=self._build_regions(region_context),
+            region_supervision=self._build_region_supervision(region_context),
             model_decisions=self._build_model_decisions(hybrid_matte),
             fusion=self._build_fusion(decontaminate_context),
             quality_selection=self._build_quality_selection(hybrid_matte),
+            edge_reconstruction=_json_safe(dict(edge_reconstruction or {})),
+            black_effect_enhancement=self._build_black_effect_enhancement(hybrid_matte),
             foreground_recovery=self._build_foreground_recovery(decontaminate_context),
             artifacts=self._build_artifacts(artifacts or {}, output_dir),
             warnings=[],
@@ -123,6 +133,9 @@ class ProcessingReportBuilder:
                 "hole_pixels": 0,
                 "background_residue": None,
                 "temporal_flicker": None,
+                "edge_temporal_flicker": None,
+                "transparent_temporal_flicker": None,
+                "max_frame_delta": None,
             }
 
         return {
@@ -137,6 +150,13 @@ class ProcessingReportBuilder:
                 getattr(quality_report, "background_residue", None)
             ),
             "temporal_flicker": _optional_float(getattr(quality_report, "temporal_flicker", None)),
+            "edge_temporal_flicker": _optional_float(
+                getattr(quality_report, "edge_temporal_flicker", None)
+            ),
+            "transparent_temporal_flicker": _optional_float(
+                getattr(quality_report, "transparent_temporal_flicker", None)
+            ),
+            "max_frame_delta": _optional_float(getattr(quality_report, "max_frame_delta", None)),
         }
 
     @staticmethod
@@ -155,6 +175,28 @@ class ProcessingReportBuilder:
             for field in self.REGION_FIELDS:
                 counts[f"{field}_pixels"] += int(np.count_nonzero(getattr(ownership, field)))
         return counts
+
+    @staticmethod
+    def _build_region_supervision(region_context: Mapping[str, Any] | None) -> dict[str, Any]:
+        ownerships = [] if not region_context else region_context.get("region_ownership", [])
+        total_pixels = sum(int(ownership.subject.size) for ownership in ownerships or [])
+        region_pixels = {
+            field: sum(int(np.count_nonzero(getattr(ownership, field))) for ownership in ownerships or [])
+            for field in ProcessingReportBuilder.REGION_FIELDS
+        }
+        denominator = max(total_pixels, 1)
+        region_ratios = {
+            field: round(count / denominator, 6) for field, count in region_pixels.items()
+        }
+        expectations = region_context.get("region_expectations") if region_context else None
+        failures = _region_expectation_failures(expectations, region_pixels, region_ratios)
+        return {
+            "frame_count": len(ownerships or []),
+            "total_pixels": total_pixels,
+            "region_pixels": region_pixels,
+            "region_ratios": region_ratios,
+            "failures": failures,
+        }
 
     @staticmethod
     def _build_model_decisions(hybrid_matte: Any | None) -> dict[str, Any]:
@@ -216,6 +258,17 @@ class ProcessingReportBuilder:
         return _json_safe(dict(recovery))
 
     @staticmethod
+    def _build_black_effect_enhancement(hybrid_matte: Any | None) -> dict[str, Any]:
+        black_matte = getattr(hybrid_matte, "black_matte", None) if hybrid_matte is not None else None
+        history = getattr(black_matte, "effect_enhancement_history", None)
+        if history:
+            return _aggregate_black_effect_history(history)
+        diagnostics = getattr(black_matte, "last_effect_enhancement", None)
+        if not diagnostics:
+            return {}
+        return _json_safe(dict(diagnostics))
+
+    @staticmethod
     def _build_artifacts(artifacts: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
         result = {}
         for key, value in artifacts.items():
@@ -274,3 +327,54 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, float):
         return round(value, 6)
     return value
+
+
+def _region_expectation_failures(
+    expectations: Any,
+    region_pixels: Mapping[str, int],
+    region_ratios: Mapping[str, float],
+) -> list[str]:
+    if not isinstance(expectations, Mapping):
+        return []
+    failures: list[str] = []
+    required = expectations.get("required_regions", ()) or ()
+    for region in required:
+        region_name = str(region)
+        if region_name not in region_pixels:
+            raise ValueError(f"Unsupported region: {region_name}")
+        if region_pixels[region_name] <= 0:
+            failures.append(f"required_region {region_name} missing")
+    min_ratios = expectations.get("min_region_ratios", {}) or {}
+    for region, minimum in dict(min_ratios).items():
+        region_name = str(region)
+        if region_name not in region_ratios:
+            raise ValueError(f"Unsupported region: {region_name}")
+        minimum_f = float(minimum)
+        if region_ratios[region_name] < minimum_f:
+            failures.append(
+                f"region_ratio {region_name} {region_ratios[region_name]:.6f} "
+                f"below minimum {minimum_f:.6f}"
+            )
+    return failures
+
+
+def _aggregate_black_effect_history(history: Any) -> dict[str, Any]:
+    if not isinstance(history, (list, tuple)):
+        return {}
+    items = [dict(item) for item in history if isinstance(item, Mapping)]
+    if not items:
+        return {}
+    count_fields = (
+        "smoke_pixels",
+        "glow_pixels",
+        "particle_pixels",
+        "subject_edge_pixels",
+        "black_residue_suppressed_pixels",
+    )
+    summary: dict[str, Any] = {"frames": len(items)}
+    for field in count_fields:
+        summary[field] = int(sum(int(item.get(field, 0)) for item in items))
+    summary["mean_alpha_delta"] = float(
+        np.mean([float(item.get("mean_alpha_delta", 0.0)) for item in items])
+    )
+    return _json_safe(summary)
